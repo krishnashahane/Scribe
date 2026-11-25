@@ -3,6 +3,10 @@ import crypto from 'node:crypto'
 const SCRYPT = { N: 16384, r: 8, p: 1, keylen: 64 }
 export const SESSION_COOKIE = 'scribe_session'
 const SESSION_TTL_MS = 1000 * 60 * 60 * 24 * 14
+/** Guest (no-login) sessions last a year so a browser keeps its documents, like a desktop app. */
+export const GUEST_TTL_MS = 1000 * 60 * 60 * 24 * 365
+export const GUEST_DOMAIN = '@guest.scribe.local'
+export const isGuestEmail = (email) => String(email).endsWith(GUEST_DOMAIN)
 
 export function hashPassword(password) {
   const salt = crypto.randomBytes(16)
@@ -21,9 +25,9 @@ export function verifyPassword(password, stored) {
 const sha256 = (s) => crypto.createHash('sha256').update(s).digest('hex')
 export const newId = (bytes = 12) => crypto.randomBytes(bytes).toString('base64url')
 
-export function createSession(db, userId) {
+export function createSession(db, userId, ttl = SESSION_TTL_MS) {
   const token = crypto.randomBytes(32).toString('base64url')
-  db.prepare('INSERT INTO sessions (token_hash, user_id, expires) VALUES (?, ?, ?)').run(sha256(token), userId, Date.now() + SESSION_TTL_MS)
+  db.prepare('INSERT INTO sessions (token_hash, user_id, expires) VALUES (?, ?, ?)').run(sha256(token), userId, Date.now() + ttl)
   return token
 }
 
@@ -53,8 +57,8 @@ export function parseCookies(header) {
   return out
 }
 
-export function sessionCookie(token, secure) {
-  const attrs = [`${SESSION_COOKIE}=${token}`, 'Path=/', 'HttpOnly', 'SameSite=Strict', `Max-Age=${Math.floor(SESSION_TTL_MS / 1000)}`]
+export function sessionCookie(token, secure, ttl = SESSION_TTL_MS) {
+  const attrs = [`${SESSION_COOKIE}=${token}`, 'Path=/', 'HttpOnly', 'SameSite=Strict', `Max-Age=${Math.floor(ttl / 1000)}`]
   if (secure) attrs.push('Secure')
   return attrs.join('; ')
 }
