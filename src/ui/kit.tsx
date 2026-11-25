@@ -102,9 +102,23 @@ export function ToastProvider({ children }: { children: ReactNode }) {
 
 export const useToast = () => useContext(ToastCtx)
 
-export function Menu(props: { label: ReactNode; ariaLabel: string; items: ({ label: string; onClick: () => void; shortcut?: string; disabled?: boolean } | 'sep')[]; className?: string }) {
+export function Menu(props: { label: ReactNode; ariaLabel: string; items: ({ label: string; onClick: () => void; shortcut?: string; disabled?: boolean } | 'sep')[]; className?: string; align?: 'left' | 'right' }) {
   const [open, setOpen] = useState(false)
   const ref = useRef<HTMLDivElement>(null)
+  // fixed position under the trigger, so menus inside scrolling or wrapping toolbars are never clipped
+  const [pos, setPos] = useState<React.CSSProperties>({})
+  const toggle = () => {
+    const r = ref.current?.querySelector('.sc-menu-trigger')?.getBoundingClientRect()
+    if (r) {
+      const top = r.bottom + 4
+      setPos(
+        (props.align ?? 'right') === 'left'
+          ? { position: 'fixed', top, left: Math.max(8, Math.min(r.left, window.innerWidth - 288)), right: 'auto' }
+          : { position: 'fixed', top, right: Math.max(8, window.innerWidth - r.right), left: 'auto' },
+      )
+    }
+    setOpen(!open)
+  }
   useEffect(() => {
     if (!open) return
     const close = (e: MouseEvent) => !ref.current?.contains(e.target as Node) && setOpen(false)
@@ -130,11 +144,11 @@ export function Menu(props: { label: ReactNode; ariaLabel: string; items: ({ lab
   }
   return (
     <div className={`sc-menu ${props.className ?? ''}`} ref={ref}>
-      <button className="sc-menu-trigger" aria-haspopup="menu" aria-expanded={open} aria-label={props.ariaLabel} onMouseDown={(e) => e.preventDefault()} onClick={() => setOpen(!open)}>
+      <button className="sc-menu-trigger" aria-haspopup="menu" aria-expanded={open} aria-label={props.ariaLabel} onMouseDown={(e) => e.preventDefault()} onClick={toggle}>
         {props.label}
       </button>
       {open && (
-        <div className="sc-menu-list" role="menu" onKeyDown={onKeyDown}>
+        <div className="sc-menu-list" role="menu" onKeyDown={onKeyDown} style={pos}>
           {props.items.map((it, i) =>
             it === 'sep' ? (
               <div key={i} className="sc-menu-sep" role="separator" />
