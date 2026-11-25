@@ -32,7 +32,7 @@ export class OoxmlPackage {
     const bytes = data instanceof Uint8Array ? data : new Uint8Array(data)
     if (bytes.byteLength > LIMITS.maxCompressedBytes) throw new DocxFormatError('File is too large to open safely.')
     if (bytes[0] !== 0x50 || bytes[1] !== 0x4b) {
-      if (bytes[0] === 0xd0 && bytes[1] === 0xcf) throw new DocxFormatError('This is a legacy .doc (binary Word 97-2003) file. Save it as .docx and try again.')
+      if (bytes[0] === 0xd0 && bytes[1] === 0xcf) throw new DocxFormatError('This is a legacy binary .doc file. Save it as .docx and try again.')
       throw new DocxFormatError('Not a DOCX file (missing ZIP signature).')
     }
     let zip: JSZip
