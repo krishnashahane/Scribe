@@ -90,6 +90,52 @@ export interface DocMeta {
   defaults: { fontFamily: string; fontSizePt: number; lineHeight: number }
   /** Paragraph styles available in the style picker */
   styles: StyleDef[]
+  /** Bibliography sources (written to the package's bibliography part on export) */
+  sources?: Source[]
+  citationStyle?: CitationStyle
+  /** Mail merge recipients loaded from a CSV file */
+  mailMerge?: MailMergeData
+  /** Custom XML data parts of the original package (editable as XML) */
+  customXml?: CustomXmlPart[]
+}
+
+export type CitationStyle = 'APA' | 'MLA' | 'Chicago'
+
+export type SourceType = 'Book' | 'JournalArticle' | 'InternetSite' | 'Report' | 'Misc'
+
+export interface SourcePerson {
+  last: string
+  first?: string
+}
+
+export interface Source {
+  /** Unique tag used by citation fields (e.g. Smi20) */
+  tag: string
+  type: SourceType
+  authors: SourcePerson[]
+  title: string
+  year?: string
+  publisher?: string
+  city?: string
+  journal?: string
+  volume?: string
+  issue?: string
+  pages?: string
+  url?: string
+  accessed?: string
+}
+
+export interface MailMergeData {
+  name: string
+  fields: string[]
+  records: string[][]
+}
+
+export interface CustomXmlPart {
+  path: string
+  xml: string
+  /** set once edited in SCRIBE; only edited parts are rewritten on export */
+  edited?: boolean
 }
 
 export interface StyleDef {
@@ -106,6 +152,15 @@ export interface StyleDef {
   spacingBefore?: number
   spacingAfter?: number
   outlineLevel?: number
+  underline?: boolean
+  alignment?: 'left' | 'center' | 'right' | 'justify'
+  /** line spacing multiple (1 = single) */
+  lineSpacing?: number
+  next?: string
+  /** edited in SCRIBE: the style definition is rewritten on export */
+  modified?: boolean
+  /** created in SCRIBE (not in the original style sheet) */
+  custom?: boolean
 }
 
 export interface ScribeDocument {
