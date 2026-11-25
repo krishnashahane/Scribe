@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { api, type User } from '../api'
 
-export function Login({ onAuth }: { onAuth: (u: User) => void }) {
+export function Login({ onAuth, onContinue, notice }: { onAuth: (u: User) => void; onContinue: () => void; notice?: string }) {
   const [mode, setMode] = useState<'login' | 'register'>('login')
   const [email, setEmail] = useState('')
   const [name, setName] = useState('')
@@ -29,9 +29,14 @@ export function Login({ onAuth }: { onAuth: (u: User) => void }) {
         <div className="sc-auth-brand">
           <span className="sc-logo">SCRIBE</span>
           <p>A word processor that respects your documents.</p>
+          <button type="button" className="sc-continue" onClick={onContinue}>
+            Continue without an account →
+          </button>
         </div>
         <form onSubmit={submit} aria-label={mode === 'login' ? 'Sign in' : 'Create account'}>
           <h1>{mode === 'login' ? 'Sign in' : 'Create your account'}</h1>
+          <p className="sc-muted">Accounts are optional. Use one to share documents or open them on another device.</p>
+          {notice && <p className="sc-error" role="alert">{notice}</p>}
           {mode === 'register' && (
             <label>
               Name
