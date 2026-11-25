@@ -9,6 +9,9 @@ import Image from '@tiptap/extension-image'
 import Subscript from '@tiptap/extension-subscript'
 import Superscript from '@tiptap/extension-superscript'
 import { twipToPx } from './types'
+import { chartSvg, type ChartData } from '../objects/chart'
+import { ommlToMathml } from '../objects/math'
+import { DEFAULT_SHAPE, SHAPE_KINDS, shapeSvg, type ShapeAttrs } from '../objects/shapes'
 
 const BLOCK_TYPES = ['paragraph', 'heading']
 
@@ -56,7 +59,7 @@ export const ParagraphFormat = Extension.create({
           direction: str('dir'),
           /** Raw unknown <w:pPr> children, re-emitted verbatim on DOCX export. */
           pPrExtra: { default: null, rendered: false },
-          /** Paragraph-mark run properties (affects empty-paragraph height in Word). */
+          /** Paragraph-mark run properties (affects empty-paragraph height). */
           markRPr: { default: null, rendered: false },
           /** Attributes of <w:spacing>/<w:ind> that SCRIBE does not edit (e.g. beforeAutospacing). */
           spacingExtra: { default: null, rendered: false },
@@ -210,7 +213,7 @@ export const Bookmark = atomInline('bookmark', { name: { default: '' }, bid: { d
   { class: 'sc-bookmark', id: `bm-${a.name}`, title: `Bookmark: ${a.name}` },
 ])
 
-/** Word field (PAGE, NUMPAGES, REF, TOC entries...). The cached result is shown; instr is preserved. */
+/** Document field (PAGE, NUMPAGES, REF, TOC entries...). The cached result is shown; instr is preserved. */
 export const Field = atomInline('field', { instr: { default: '' }, result: { default: '' }, rawXml: { default: null, rendered: false } }, (a) => [
   'span',
   { class: 'sc-field', title: `Field: ${a.instr}`, 'data-instr': a.instr },
@@ -246,11 +249,131 @@ export const OpaqueBlock = Node.create({
   },
 })
 
-export const OpaqueInline = atomInline(
-  'opaqueInline',
-  { xml: { default: '', rendered: false }, label: { default: 'Object' }, preview: { default: '' } },
-  (a) => ['span', { class: 'sc-chip sc-opaque-inline', title: `${a.label} (preserved from the original file)` }, a.preview || `[${a.label}]`],
-)
+const svgUrl = (svg: string) => `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`
+
+/** Editable data extracted from a preserved object (chart data, diagram text, equation, text box). */
+export type ObjectInfo =
+  | { kind: 'chart'; chart: ChartData; width: number; height: number }
+  | { kind: 'smartart'; smartArt: import('../objects/smartart').SmartArtData }
+  | { kind: 'textbox' }
+  | { kind: 'equation' }
+
+function opaqueInlineSpec(a: Record<string, any>): [string, Record<string, any>, ...any[]] {
+  const obj = a.object as ObjectInfo | null
+  if (obj?.kind === 'chart' && obj.chart) {
+    const w = Math.max(60, Math.round(obj.width || 480))
+    const h = Math.max(40, Math.round(obj.height || 280))
+    try {
+      return ['img', { class: 'sc-chart', src: svgUrl(chartSvg(obj.chart, w, h)), width: w, height: h, alt: String(obj.chart.title || 'Chart'), title: 'Chart: double-click to edit its data' }]
+    } catch {
+      /* malformed chart data: fall back to the placeholder chip */
+    }
+  }
+  const hint = obj?.kind === 'smartart' ? ' (double-click to edit its text)' : obj?.kind === 'textbox' ? ' (double-click to edit)' : obj?.kind === 'equation' ? ' (double-click to edit)' : ''
+  return ['span', { class: `sc-chip sc-opaque-inline${obj ? ' is-editable' : ''}`, title: `${a.label}${hint || ' (kept from the original file)'}` }, a.preview || `[${a.label}]`]
+}
+
+export const OpaqueInline = Node.create({
+  name: 'opaqueInline',
+  group: 'inline',
+  inline: true,
+  atom: true,
+  selectable: true,
+  addAttributes() {
+    return {
+      xml: { default: '', rendered: false },
+      label: { default: 'Object' },
+      preview: { default: '' },
+      object: { default: null, rendered: false },
+    }
+  },
+  parseHTML() {
+    return [{ tag: 'span[data-scribe="opaqueInline"]' }]
+  },
+  renderHTML({ node }) {
+    const [tag, a, ...rest] = opaqueInlineSpec(node.attrs)
+    return [tag, mergeAttributes({ 'data-scribe': 'opaqueInline' }, a), ...rest]
+  },
+  addNodeView() {
+    return ({ node }) => {
+      const obj = node.attrs.object as ObjectInfo | null
+      if (obj?.kind === 'equation') {
+        const mathml = ommlToMathml(String(node.attrs.xml))
+        if (mathml) {
+          const dom = document.createElement('span')
+          dom.className = 'sc-equation'
+          dom.setAttribute('data-scribe', 'opaqueInline')
+          dom.title = 'Equation (double-click to edit)'
+          // MathML is generated from escaped equation text only (see objects/math.ts)
+          dom.innerHTML = mathml
+          return { dom, update: () => false, ignoreMutation: () => true }
+        }
+      }
+      const [tag, a, ...rest] = opaqueInlineSpec(node.attrs)
+      const dom = document.createElement(tag)
+      for (const [k, v] of Object.entries(a)) dom.setAttribute(k, String(v))
+      dom.setAttribute('data-scribe', 'opaqueInline')
+      if (typeof rest[0] === 'string') dom.textContent = rest[0]
+      return { dom, update: () => false, ignoreMutation: () => true }
+    }
+  },
+})
+
+/** A drawing shape created in SCRIBE (exported as a native DrawingML shape). */
+export const Shape = Node.create({
+  name: 'shape',
+  group: 'inline',
+  inline: true,
+  atom: true,
+  selectable: true,
+  draggable: true,
+  addAttributes() {
+    return {
+      kind: { default: 'rect' },
+      width: { default: DEFAULT_SHAPE.width },
+      height: { default: DEFAULT_SHAPE.height },
+      fill: { default: DEFAULT_SHAPE.fill },
+      stroke: { default: DEFAULT_SHAPE.stroke },
+      strokeWidth: { default: DEFAULT_SHAPE.strokeWidth },
+      text: { default: '' },
+      arrow: { default: false },
+    }
+  },
+  parseHTML() {
+    return [{ tag: 'img[data-scribe="shape"]' }]
+  },
+  renderHTML({ node }) {
+    const a = node.attrs as ShapeAttrs
+    const kind = a.kind in SHAPE_KINDS ? a.kind : 'rect'
+    const svg = shapeSvg({ ...a, kind })
+    return ['img', { 'data-scribe': 'shape', class: 'sc-shape', src: svgUrl(svg), width: Math.round(a.width), height: Math.round(a.height), alt: a.text || SHAPE_KINDS[kind], title: `${SHAPE_KINDS[kind]} (double-click to edit)` }]
+  },
+})
+
+/** Bibliography generated from the document's sources. entries: [[{text, italic}]] */
+export const Bibliography = Node.create({
+  name: 'bibliography',
+  group: 'block',
+  atom: true,
+  selectable: true,
+  addAttributes() {
+    return { title: { default: 'References' }, entries: { default: [], rendered: false } }
+  },
+  parseHTML() {
+    return [{ tag: 'div[data-scribe="bibliography"]' }]
+  },
+  renderHTML({ node }) {
+    const entries = (Array.isArray(node.attrs.entries) ? node.attrs.entries : []) as { text: string; italic?: boolean }[][]
+    return [
+      'div',
+      { 'data-scribe': 'bibliography', class: 'sc-bibliography', contenteditable: 'false', title: 'Bibliography (updates from References → Sources)' },
+      ['p', { class: 'sc-bib-title' }, String(node.attrs.title || 'References')],
+      ...(entries.length
+        ? entries.map((e) => ['p', { class: 'sc-bib-entry' }, ...e.map((seg) => (seg.italic ? ['em', {}, String(seg.text)] : ['span', {}, String(seg.text)]))])
+        : [['p', { class: 'sc-bib-entry sc-muted' }, 'No sources yet. Add sources from the References tab.']]),
+    ]
+  },
+})
 
 export const CommentMark = Mark.create({
   name: 'comment',
@@ -411,14 +534,14 @@ export const StableIds = Extension.create({
   addGlobalAttributes() {
     return [
       {
-        types: ['paragraph', 'heading', 'table', 'bulletList', 'orderedList', 'blockquote', 'codeBlock', 'opaqueBlock', 'pageBreak', 'sectionBreak', 'image'],
+        types: ['paragraph', 'heading', 'table', 'bulletList', 'orderedList', 'blockquote', 'codeBlock', 'opaqueBlock', 'pageBreak', 'sectionBreak', 'image', 'bibliography'],
         attributes: { nid: { default: null, keepOnSplit: false, renderHTML: (a: any) => (a.nid ? { 'data-nid': a.nid } : {}), parseHTML: () => null } },
       },
     ]
   },
   addProseMirrorPlugins() {
     const key = new PluginKey('stableIds')
-    const types = new Set(['paragraph', 'heading', 'table', 'bulletList', 'orderedList', 'blockquote', 'codeBlock', 'opaqueBlock', 'pageBreak', 'sectionBreak'])
+    const types = new Set(['paragraph', 'heading', 'table', 'bulletList', 'orderedList', 'blockquote', 'codeBlock', 'opaqueBlock', 'pageBreak', 'sectionBreak', 'bibliography'])
     return [
       new Plugin({
         key,
@@ -484,6 +607,8 @@ export function schemaExtensions(opts: { collaborative?: boolean } = {}) {
     NoteRef,
     OpaqueBlock,
     OpaqueInline,
+    Shape,
+    Bibliography,
     CommentMark,
     InsertionMark,
     DeletionMark,
