@@ -18,8 +18,9 @@ import { validatePackage } from '../docx/validate'
 import { contentToText, documentToHtml, download, safeFilename, sanitizeHtml } from '../formats/formats'
 import { Ribbon, type RibbonAction } from './Ribbon'
 import { AiPanel, ChangesPanel, CommentsPanel, FindBar, PagesPanel, VersionsPanel } from './Panels'
+import { createFromTemplate, importFile, OPEN_ACCEPT, openDoc } from './docActions'
 import {
-  CompatReport, HeaderFooterDialog, LinkDialog, PageSetupDialog, PropertiesDialog, ShareDialog, ShortcutsDialog, TextPrompt, WordCountDialog,
+  AccountDialog, CompatReport, HeaderFooterDialog, LinkDialog, PageSetupDialog, PropertiesDialog, ShareDialog, ShortcutsDialog, TextPrompt, WordCountDialog,
 } from './Dialogs'
 import { Menu, mod, useToast } from './kit'
 import type { CompatibilityIssue } from '../model/types'
@@ -34,7 +35,8 @@ type DialogState =
   | { kind: 'props' }
   | { kind: 'shortcuts' }
   | { kind: 'wordCount' }
-  | { kind: 'report'; issues: CompatibilityIssue[]; title: string }
+  | { kind: 'report'; issues: CompatibilityIssue[]; title: string; openId?: string }
+  | { kind: 'account' }
   | null
 
 interface DocInfo {
@@ -45,7 +47,7 @@ interface DocInfo {
   meta: DocMeta
 }
 
-export function EditorScreen({ docId, user, theme, onToggleTheme }: { docId: string; user: User; theme: 'light' | 'dark'; onToggleTheme: () => void }) {
+export function EditorScreen({ docId, user, onUser, theme, onToggleTheme }: { docId: string; user: User; onUser: (u: User) => void; theme: 'light' | 'dark'; onToggleTheme: () => void }) {
   const [info, setInfo] = useState<DocInfo | null>(null)
   const [error, setError] = useState('')
   const [session, setSession] = useState<CollabSession | null>(null)
@@ -58,13 +60,17 @@ export function EditorScreen({ docId, user, theme, onToggleTheme }: { docId: str
     api<any>(`/api/docs/${docId}`)
       .then((d) => {
         if (cancelled) return
+        localStorage.setItem('scribe-last-doc', docId)
         setInfo({ title: d.title, role: d.role, hasOriginal: d.hasOriginal, originalName: d.originalName, meta: migrateDocument({ content: d.content, meta: d.meta }).meta })
         s = openSession(docId, setStatus)
         setSession(s)
         // render once the local (IndexedDB) or remote state has arrived, so the editor never starts empty
         Promise.race([s.whenSynced, s.local.whenSynced.then(() => (s!.ydoc.getXmlFragment('default').length ? undefined : s!.whenSynced))]).then(() => !cancelled && setReady(true))
       })
-      .catch((e) => setError(e.message))
+      .catch((e) => {
+        if (localStorage.getItem('scribe-last-doc') === docId) localStorage.removeItem('scribe-last-doc')
+        setError(e.message)
+      })
     return () => {
       cancelled = true
       s?.destroy()
@@ -75,7 +81,7 @@ export function EditorScreen({ docId, user, theme, onToggleTheme }: { docId: str
     return (
       <div className="sc-splash">
         <p className="sc-error">{error}</p>
-        <a href="#/">Back to documents</a>
+        <a href="#/documents">Back to documents</a>
       </div>
     )
   if (!info || !session || !ready)
@@ -85,10 +91,10 @@ export function EditorScreen({ docId, user, theme, onToggleTheme }: { docId: str
         <span>Opening document…</span>
       </div>
     )
-  return <DocEditor docId={docId} info={info} session={session} status={status} user={user} theme={theme} onToggleTheme={onToggleTheme} />
+  return <DocEditor docId={docId} info={info} session={session} status={status} user={user} onUser={onUser} theme={theme} onToggleTheme={onToggleTheme} />
 }
 
-function DocEditor({ docId, info, session, status, user, theme, onToggleTheme }: { docId: string; info: DocInfo; session: CollabSession; status: SyncStatus; user: User; theme: 'light' | 'dark'; onToggleTheme: () => void }) {
+function DocEditor({ docId, info, session, status, user, onUser, theme, onToggleTheme }: { docId: string; info: DocInfo; session: CollabSession; status: SyncStatus; user: User; onUser: (u: User) => void; theme: 'light' | 'dark'; onToggleTheme: () => void }) {
   const toast = useToast()
   const readOnly = info.role === 'viewer' || info.role === 'commenter'
   const ymeta = useMemo(() => session.ydoc.getMap<string>('scribe'), [session])
@@ -106,7 +112,15 @@ function DocEditor({ docId, info, session, status, user, theme, onToggleTheme }:
   metaRef.current = meta
   const [title, setTitle] = useState(info.title)
   const [pages, setPages] = useState<PageInfo[]>([])
-  const [panel, setPanel] = useState<Panel | null>('pages')
+  // like Word, the navigation pane starts closed; remember the user's choice
+  const [panel, setPanelState] = useState<Panel | null>(() => (localStorage.getItem('scribe-panel') as Panel | null) || null)
+  const setPanel = (p: Panel | null | ((cur: Panel | null) => Panel | null)) =>
+    setPanelState((cur) => {
+      const next = typeof p === 'function' ? p(cur) : p
+      if (next) localStorage.setItem('scribe-panel', next)
+      else localStorage.removeItem('scribe-panel')
+      return next
+    })
   const [dialog, setDialog] = useState<DialogState>(null)
   const [find, setFindOpen] = useState<null | { replace: boolean }>(null)
   const [zoom, setZoom] = useState(() => Number(localStorage.getItem('scribe-zoom')) || 1)
@@ -114,11 +128,28 @@ function DocEditor({ docId, info, session, status, user, theme, onToggleTheme }:
   zoomRef.current = zoom
   const gapRef = useRef(24)
   const [showMarks, setShowMarks] = useState(false)
+  const [painter, setPainter] = useState<null | { marks: any[]; para: Record<string, any> }>(null)
   const [composingComment, setComposingComment] = useState(false)
   const [saveState, setSaveState] = useState<'saved' | 'saving' | 'error'>('saved')
   const dirty = useRef(false)
   const lastVersionAt = useRef(Date.now())
   const imageInput = useRef<HTMLInputElement>(null)
+  const openInput = useRef<HTMLInputElement>(null)
+  const newDocument = async (template = 'blank') => {
+    await saveSnapshot()
+    createFromTemplate(template).then(openDoc).catch((e) => toast(e.message, 'error'))
+  }
+  const openFile = async (file: File) => {
+    toast(`Opening ${file.name}…`)
+    try {
+      await saveSnapshot()
+      const r = await importFile(file)
+      if (r.report.length) setDialog({ kind: 'report', issues: r.report, title: 'Import report', openId: r.id })
+      else openDoc(r.id)
+    } catch (e: any) {
+      toast(`Could not open ${file.name}: ${e.message}`, 'error')
+    }
+  }
 
   // ---- meta sync (Yjs map, last-writer-wins per edit)
   useEffect(() => {
@@ -142,6 +173,7 @@ function DocEditor({ docId, info, session, status, user, theme, onToggleTheme }:
   const editor = useEditor(
     {
       editable: !readOnly,
+      autofocus: readOnly ? false : 'end',
       extensions: [
         ...schemaExtensions({ collaborative: true }),
         Collaboration.configure({ document: session.ydoc, field: 'default' }),
@@ -462,8 +494,49 @@ function DocEditor({ docId, info, session, status, user, theme, onToggleTheme }:
         return setPanel((p) => (p ? null : 'pages'))
       case 'marks':
         return setShowMarks((v) => !v)
+      case 'formatPainter': {
+        if (painter) return setPainter(null)
+        const { $from } = editor.state.selection
+        const skip = ['link', 'comment', 'insertion', 'deletion']
+        const marks = (editor.state.storedMarks ?? $from.marks()).filter((m) => !skip.includes(m.type.name)).map((m) => m.toJSON())
+        const a = $from.parent.attrs
+        const para = Object.fromEntries(['textAlign', 'indentLeft', 'indentRight', 'indentFirstLine', 'spacingBefore', 'spacingAfter', 'lineSpacing', 'lineRule', 'shading', 'styleId'].map((k) => [k, a[k] ?? null]))
+        setPainter({ marks, para })
+        return toast('Format painter: select the text to apply this formatting to (Esc to cancel).', 'info')
+      }
     }
   }
+
+  // ---- format painter: apply copied formatting to the next selection
+  useEffect(() => {
+    if (!editor || !painter) return
+    const dom = editor.view.dom as HTMLElement
+    dom.classList.add('is-painting')
+    const apply = () =>
+      setTimeout(() => {
+        const { from, to, empty } = editor.state.selection
+        if (empty) return
+        const { schema } = editor.state
+        const tr = editor.state.tr
+        for (const name of ['bold', 'italic', 'underline', 'strike', 'textStyle', 'highlight', 'subscript', 'superscript']) if (schema.marks[name]) tr.removeMark(from, to, schema.marks[name])
+        for (const m of painter.marks) tr.addMark(from, to, schema.markFromJSON(m))
+        editor.state.doc.nodesBetween(from, to, (n, pos) => {
+          if (n.type.name === 'paragraph' || n.type.name === 'heading') tr.setNodeMarkup(pos, undefined, { ...n.attrs, ...painter.para })
+        })
+        editor.view.dispatch(tr)
+        setPainter(null)
+      }, 0)
+    const esc = (e: KeyboardEvent) => e.key === 'Escape' && setPainter(null)
+    dom.addEventListener('mouseup', apply)
+    dom.addEventListener('keyup', apply)
+    window.addEventListener('keydown', esc)
+    return () => {
+      dom.classList.remove('is-painting')
+      dom.removeEventListener('mouseup', apply)
+      dom.removeEventListener('keyup', apply)
+      window.removeEventListener('keydown', esc)
+    }
+  }, [editor, painter])
 
   // ---- global shortcuts
   useEffect(() => {
@@ -483,6 +556,19 @@ function DocEditor({ docId, info, session, status, user, theme, onToggleTheme }:
       } else if (k === 's') {
         e.preventDefault()
         saveVersion().catch((err) => toast(err.message, 'error'))
+      } else if (e.shiftKey && (e.key === '>' || e.key === '<' || e.code === 'Period' || e.code === 'Comma') && editor && !readOnly) {
+        e.preventDefault()
+        const SZ = [8, 9, 10, 10.5, 11, 12, 14, 16, 18, 20, 24, 28, 32, 36, 48, 72]
+        const cur = parseFloat(editor.getAttributes('textStyle').fontSize) || metaRef.current.defaults.fontSizePt
+        const up = e.key === '>' || e.code === 'Period'
+        const next = up ? SZ.find((x) => x > cur) ?? cur + 12 : [...SZ].reverse().find((x) => x < cur) ?? Math.max(1, cur - 1)
+        editor.chain().focus().setFontSize(`${next}pt`).run()
+      } else if (k === 'o' && !e.shiftKey) {
+        e.preventDefault()
+        openInput.current?.click()
+      } else if (e.altKey && (k === 'n' || e.code === 'KeyN')) {
+        e.preventDefault()
+        newDocument()
       } else if (k === 'p') {
         e.preventDefault()
         printDoc()
@@ -524,7 +610,7 @@ function DocEditor({ docId, info, session, status, user, theme, onToggleTheme }:
     <div className={`sc-app ${showMarks ? 'show-marks' : ''}`}>
       <style>{styleCss}</style>
       <header className="sc-topbar">
-        <a className="sc-btn" href="#/" aria-label="Back to documents" title="Back to documents">
+        <a className="sc-btn" href="#/documents" aria-label="All documents" title="All documents">
           <ArrowLeft size={18} />
         </a>
         <span className="sc-logo is-small">SCRIBE</span>
@@ -539,6 +625,10 @@ function DocEditor({ docId, info, session, status, user, theme, onToggleTheme }:
           ariaLabel="File menu"
           label={<span className="sc-menu-label">File</span>}
           items={[
+            { label: 'New blank document', onClick: () => newDocument(), shortcut: `${mod}Alt+N` },
+            { label: 'Open…', onClick: () => openInput.current?.click(), shortcut: `${mod}O` },
+            { label: 'New from template…', onClick: () => (location.hash = '#/documents') },
+            'sep',
             { label: 'Save version', onClick: () => saveVersion().catch((e) => toast(e.message, 'error')), shortcut: `${mod}S`, disabled: readOnly },
             { label: 'Version history', onClick: () => setPanel('versions') },
             'sep',
@@ -551,8 +641,9 @@ function DocEditor({ docId, info, session, status, user, theme, onToggleTheme }:
             { label: 'Document properties…', onClick: () => setDialog({ kind: 'props' }) },
             { label: 'Share…', onClick: () => setDialog({ kind: 'share' }) },
             'sep',
+            { label: user.guest ? 'Save to an account…' : 'Account', onClick: () => setDialog({ kind: 'account' }) },
             { label: 'Keyboard shortcuts', onClick: () => setDialog({ kind: 'shortcuts' }), shortcut: `${mod}/` },
-            { label: 'Back to documents', onClick: () => (location.hash = '#/') },
+            { label: 'All documents', onClick: () => (location.hash = '#/documents') },
           ]}
         />
         <button className="sc-btn with-label" onClick={() => exportAs('docx')} title="Download as DOCX" aria-label="Download as DOCX">
@@ -572,6 +663,7 @@ function DocEditor({ docId, info, session, status, user, theme, onToggleTheme }:
         theme={theme}
         hasOriginal={info.hasOriginal}
         showMarks={showMarks}
+        painterActive={!!painter}
         onAction={onAction}
       />
       {find && <FindBar editor={editor} replace={find.replace} readOnly={readOnly} onClose={() => { setFindOpen(null); editor.commands.focus() }} />}
@@ -636,8 +728,15 @@ function DocEditor({ docId, info, session, status, user, theme, onToggleTheme }:
         <WordCountLive editor={editor} />
         <span className="sc-spacer" />
         <span>{Object.keys(meta.headerFooters).length ? 'Headers/footers on' : ''}</span>
-        <span>{Math.round(zoom * 100)}%</span>
+        <label className="sc-zoom-slider">
+          <span className="sc-visually-hidden">Zoom</span>
+          <button className="sc-zoom-step" onClick={() => setZoom((z) => Math.max(0.3, Math.round((z - 0.1) * 10) / 10))} aria-label="Zoom out">−</button>
+          <input type="range" min={30} max={300} step={10} value={Math.round(zoom * 100)} onChange={(e) => setZoom(Number(e.target.value) / 100)} aria-label="Zoom level" />
+          <button className="sc-zoom-step" onClick={() => setZoom((z) => Math.min(3, Math.round((z + 0.1) * 10) / 10))} aria-label="Zoom in">+</button>
+          <button className="sc-zoom-pct" onClick={() => setZoom(1)} title="Reset to 100%">{Math.round(zoom * 100)}%</button>
+        </label>
       </footer>
+      <input ref={openInput} type="file" accept={OPEN_ACCEPT} hidden onChange={(e) => { const f = e.target.files?.[0]; e.target.value = ''; if (f) openFile(f) }} />
       <input ref={imageInput} type="file" accept="image/png,image/jpeg,image/gif,image/webp,image/bmp" hidden onChange={(e) => { const f = e.target.files?.[0]; e.target.value = ''; if (f) insertImageFile(f) }} />
 
       {dialog?.kind === 'pageSetup' && (
@@ -725,7 +824,19 @@ function DocEditor({ docId, info, session, status, user, theme, onToggleTheme }:
       )}
       {dialog?.kind === 'shortcuts' && <ShortcutsDialog onClose={() => setDialog(null)} />}
       {dialog?.kind === 'wordCount' && <WordCountDialog text={editor.state.selection.empty ? editor.getText() : editor.state.doc.textBetween(editor.state.selection.from, editor.state.selection.to, '\n')} onClose={() => setDialog(null)} />}
-      {dialog?.kind === 'report' && <CompatReport issues={dialog.issues} title={dialog.title} onClose={() => setDialog(null)} />}
+      {dialog?.kind === 'report' && (
+        <CompatReport
+          issues={dialog.issues}
+          title={dialog.title}
+          actionLabel={dialog.openId ? 'Open document' : 'Close'}
+          onClose={() => {
+            const id = dialog.openId
+            setDialog(null)
+            if (id) openDoc(id)
+          }}
+        />
+      )}
+      {dialog?.kind === 'account' && <AccountDialog user={user} onUser={onUser} onClose={() => setDialog(null)} />}
     </div>
   )
 }
