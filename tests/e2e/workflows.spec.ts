@@ -233,7 +233,7 @@ test('security: imported HTML is sanitized', async ({ page }) => {
   expect(await page.locator('.sc-doc a[href^="javascript"]').count()).toBe(0)
 })
 
-test('Word-style tools: format painter, change case, grow font, zoom slider', async ({ page }) => {
+test('Editing tools: format painter, change case, grow font, zoom slider', async ({ page }) => {
   await page.goto('/')
   await expect(body(page)).toBeVisible({ timeout: 20000 })
   await body(page).click()
@@ -260,4 +260,90 @@ test('Word-style tools: format painter, change case, grow font, zoom slider', as
   // zoom slider
   await page.getByLabel('Zoom level').fill('150')
   await expect(page.locator('.sc-zoom-pct')).toHaveText('150%')
+})
+
+test('shapes, equations, citations, bibliography, proofing and mail merge work end to end', async ({ page }) => {
+  await page.goto('/')
+  await expect(body(page)).toBeVisible({ timeout: 20000 })
+  await page.getByRole('button', { name: 'File menu' }).click()
+  await page.getByRole('menuitem', { name: /New blank document/ }).click()
+  await expect(page.getByLabel('Document title')).toHaveValue('Document', { timeout: 15000 })
+  await body(page).click()
+  await page.keyboard.type('Dear ')
+
+  // merge field from a CSV
+  await page.getByRole('tab', { name: 'Mailings' }).click()
+  await page.getByRole('toolbar').getByRole('button', { name: 'Mail merge' }).click()
+  await page.locator('.sc-steps input[type=file]').setInputFiles({ name: 'people.csv', mimeType: 'text/csv', buffer: Buffer.from('Name,City\nAda,London\nGrace,Arlington\n') })
+  await expect(page.getByText('2 recipients', { exact: false }).first()).toBeVisible()
+  await body(page).click()
+  await page.keyboard.press('End')
+  await page.getByRole('button', { name: '«Name»' }).click()
+  await page.keyboard.type(' wrote this this sentence. ')
+
+  // shape and equation
+  await page.getByRole('tab', { name: 'Insert' }).click()
+  await page.getByRole('button', { name: 'Shapes' }).click()
+  await page.getByRole('menuitem', { name: 'Oval' }).click()
+  await page.locator('img.sc-shape').dblclick()
+  await page.getByLabel('Text in shape').fill('Hi')
+  await page.getByRole('button', { name: 'Save' }).click()
+  await page.getByRole('button', { name: 'Equation' }).click()
+  await page.getByRole('dialog').getByRole('textbox').fill('E = mc^2')
+  await expect(page.getByRole('dialog').locator('math msup')).toBeVisible()
+  await page.getByRole('button', { name: 'Insert', exact: true }).click()
+  await expect(page.locator('.sc-doc .sc-equation math')).toBeVisible()
+
+  // citation and bibliography
+  await page.getByRole('tab', { name: 'References' }).click()
+  await page.getByRole('button', { name: 'Insert citation' }).click()
+  await page.getByRole('button', { name: 'Add a source' }).click()
+  await page.getByLabel('Author 1 last name').fill('Smith')
+  await page.getByLabel('Author 1 first name').fill('Jane')
+  await page.getByRole('dialog').getByLabel('Title', { exact: true }).fill('Writing Well')
+  await page.getByLabel('Year').fill('2020')
+  await page.getByRole('button', { name: 'Save sources' }).click()
+  await page.locator('.sc-pick-list input').first().check()
+  await page.getByRole('button', { name: 'Insert', exact: true }).click()
+  await expect(body(page)).toContainText('(Smith, 2020)')
+  await page.getByRole('button', { name: 'Bibliography' }).click()
+  await expect(page.locator('.sc-bibliography')).toContainText('Smith, J. (2020). Writing Well.')
+  await page.getByLabel('Citation style').selectOption('MLA')
+  await expect(page.locator('.sc-bibliography')).toContainText('Works Cited')
+  await expect(body(page)).toContainText('(Smith)')
+
+  // proofing flags the repeated word and fixes it
+  await page.getByRole('navigation').getByRole('button', { name: 'Proofing' }).click()
+  await page.getByLabel('Check grammar and style').check()
+  await expect(page.locator('.sc-doc .sc-proof').first()).toBeVisible()
+  await page.getByRole('button', { name: 'Change to “this”' }).click()
+  await expect(body(page)).toContainText('wrote this sentence')
+
+  // export validates and keeps everything
+  await expect(page.getByRole('status').filter({ hasText: 'All changes saved' })).toBeVisible({ timeout: 15000 })
+  const [dl] = await Promise.all([page.waitForEvent('download'), page.getByRole('button', { name: 'Download as DOCX' }).click()])
+  const file = path.join(out, 'e2e-features.docx')
+  await dl.saveAs(file)
+  const bytes = new Uint8Array(fs.readFileSync(file))
+  expect(await validatePackage(bytes)).toEqual([])
+  const re = await importDocx(bytes)
+  const json = JSON.stringify(re.doc.content)
+  expect(json).toContain('"type":"shape"')
+  expect(json).toContain('MERGEFIELD Name')
+  expect(json).toContain('CITATION')
+  expect(json).toContain('"type":"bibliography"')
+  expect(json).toContain('"kind":"equation"')
+  expect(re.doc.meta.sources?.[0].title).toBe('Writing Well')
+  expect(re.doc.meta.citationStyle).toBe('MLA')
+
+  // merge to DOCX: one page per recipient
+  await page.getByRole('navigation').getByRole('button', { name: 'Mail merge' }).click()
+  const [merged] = await Promise.all([page.waitForEvent('download'), page.locator('.sc-steps').getByRole('button', { name: 'DOCX' }).click()])
+  const mfile = path.join(out, 'e2e-merged.docx')
+  await merged.saveAs(mfile)
+  const mbytes = new Uint8Array(fs.readFileSync(mfile))
+  expect(await validatePackage(mbytes)).toEqual([])
+  const mjson = JSON.stringify((await importDocx(mbytes)).doc.content)
+  expect(mjson).toContain('Dear Ada')
+  expect(mjson).toContain('Dear Grace')
 })
