@@ -86,7 +86,7 @@ const SAFE_IMG = /^(data:image\/(png|jpe?g|gif|webp|bmp);base64,[A-Za-z0-9+/=]+$
 const NODE_TYPES = new Set([
   'doc', 'paragraph', 'heading', 'text', 'hardBreak', 'bulletList', 'orderedList', 'listItem', 'blockquote', 'codeBlock',
   'horizontalRule', 'table', 'tableRow', 'tableCell', 'tableHeader', 'image', 'pageBreak', 'sectionBreak', 'columnBreak',
-  'bookmark', 'field', 'noteRef', 'opaqueBlock', 'opaqueInline',
+  'bookmark', 'field', 'noteRef', 'opaqueBlock', 'opaqueInline', 'shape', 'bibliography',
 ])
 
 /** Remove unsafe URLs and unknown node types from ProseMirror JSON. Returns a new object. */
