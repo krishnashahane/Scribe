@@ -265,8 +265,12 @@ test('Editing tools: format painter, change case, grow font, zoom slider', async
 test('shapes, equations, citations, bibliography, proofing and mail merge work end to end', async ({ page }) => {
   await page.goto('/')
   await expect(body(page)).toBeVisible({ timeout: 20000 })
+  const before = page.url()
   await page.getByRole('button', { name: 'File menu' }).click()
   await page.getByRole('menuitem', { name: /New blank document/ }).click()
+  // wait until the new document has actually opened before typing into it
+  await expect(page).not.toHaveURL(before, { timeout: 20000 })
+  await expect(body(page)).toBeVisible({ timeout: 20000 })
   await expect(page.getByLabel('Document title')).toHaveValue('Document', { timeout: 15000 })
   await body(page).click()
   await page.keyboard.type('Dear ')
