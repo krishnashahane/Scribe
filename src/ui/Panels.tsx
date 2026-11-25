@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import type { Editor } from '@tiptap/react'
 import { useEditorState } from '@tiptap/react'
 import { generateHTML } from '@tiptap/core'
@@ -209,11 +209,13 @@ export function VersionsPanel({ docId, readOnly, onSaveVersion, onRestore }: { d
   const [versions, setVersions] = useState<{ id: string; created: number; label: string | null; auto: boolean; author: string | null }[] | null>(null)
   const [preview, setPreview] = useState<{ id: string; created: number; html: string; content: PMNode; meta: DocMeta } | null>(null)
   const toast = useToast()
-  const load = () => api<{ versions: any[] }>(`/api/docs/${docId}/versions`).then((r) => setVersions(r.versions)).catch((e) => toast(e.message, 'error'))
+  const load = useCallback(
+    () => api<{ versions: any[] }>(`/api/docs/${docId}/versions`).then((r) => setVersions(r.versions)).catch((e) => toast(e.message, 'error')),
+    [docId, toast],
+  )
   useEffect(() => {
     load()
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [docId])
+  }, [load])
   const open = async (id: string) => {
     try {
       const v = await api<{ id: string; created: number; content: PMNode; meta: DocMeta }>(`/api/docs/${docId}/versions/${id}`)
