@@ -17,15 +17,12 @@ export function Home({ user, onUser, onSignOut, theme, onToggleTheme }: { user: 
   const fileRef = useRef<HTMLInputElement>(null)
   const toast = useToast()
 
-  const load = () =>
+  useEffect(() => {
+    document.title = 'SCRIBE'
     api<{ docs: DocSummary[] }>('/api/docs')
       .then((r) => setDocs(r.docs))
       .catch((e) => toast(e.message, 'error'))
-  useEffect(() => {
-    load()
-    document.title = 'SCRIBE'
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
+  }, [toast])
 
   const open = openDoc
 
