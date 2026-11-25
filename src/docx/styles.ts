@@ -169,6 +169,11 @@ export function parseNumbering(doc: Document | null): Numbering {
     for (const o of wChildren(n, 'lvlOverride')) {
       const il = intAttr(o, 'ilvl') ?? 0
       const l = wChild(o, 'lvl')
+      const so = intAttr(wChild(o, 'startOverride'), 'val')
+      if (so != null && !l) {
+        const cur = base.get(il)
+        base.set(il, { numFmt: cur?.numFmt ?? 'decimal', lvlText: cur?.lvlText ?? '', start: so })
+      }
       if (l) base.set(il, { numFmt: wVal(wChild(l, 'numFmt')) || 'decimal', lvlText: wVal(wChild(l, 'lvlText')) || '', start: intAttr(wChild(l, 'start'), 'val') ?? 1 })
     }
     out.levels.set(numId, base)
