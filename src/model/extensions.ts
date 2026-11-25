@@ -366,7 +366,7 @@ const cellAttrs = {
 
 export const ScribeTable = Table.extend({
   addAttributes() {
-    return { ...this.parent?.(), tblPrExtra: { default: null, rendered: false }, tblStyle: { default: null, rendered: false } }
+    return { ...this.parent?.(), tblPrExtra: { default: null, rendered: false }, tblStyle: { default: null, rendered: false }, gridXml: { default: null, rendered: false } }
   },
 }).configure({ resizable: true, allowTableNodeSelection: true })
 export const ScribeTableRow = TableRow.extend({
