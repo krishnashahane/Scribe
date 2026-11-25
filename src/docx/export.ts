@@ -416,9 +416,10 @@ function hashBytes(b: Uint8Array): string {
 async function imageRun(node: PMNode, ctx: Ctx, rPr: string): Promise<string> {
   const src = String(node.attrs?.src || '')
   let data = dataUrlBytes(src)
-  if (!data && /^https?:/i.test(src)) {
+  if (!data && (/^https?:/i.test(src) || src.startsWith('/api/media/'))) {
     try {
-      const res = await fetch(src)
+      const res = await fetch(src, { credentials: 'same-origin' })
+      if (!res.ok) throw new Error(String(res.status))
       const buf = new Uint8Array(await res.arrayBuffer())
       data = { bytes: buf, mime: (res.headers.get('content-type') || '').split(';')[0] }
     } catch {
