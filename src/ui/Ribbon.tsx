@@ -81,7 +81,7 @@ export function Ribbon(props: {
       const s0 = Math.max(from, pos)
       const e0 = Math.min(to, pos + node.nodeSize)
       const text = node.text!.slice(s0 - pos, e0 - pos)
-      let out = text
+      let out: string
       if (mode === 'upper') out = text.toLocaleUpperCase()
       else if (mode === 'lower') out = text.toLocaleLowerCase()
       else if (mode === 'title') out = text.toLocaleLowerCase().replace(/(^|[\s\-–—"“(])(\p{L})/gu, (_m, a, b) => a + b.toLocaleUpperCase())
