@@ -6,8 +6,13 @@ import {
   IndentDecrease, IndentIncrease, Italic, Link, List, ListOrdered, MessageSquarePlus, Minus, PenLine, Printer, Redo2,
   RemoveFormatting, Ruler, Search, SeparatorHorizontal, Strikethrough, Subscript, Superscript, Table, Underline, Undo2, Ban,
   ZoomIn, ZoomOut, Moon, Sun, PanelLeft, Hash, Keyboard, FileWarning, Pilcrow, ClipboardPaste, Copy, Scissors, Paintbrush,
-  AArrowUp, AArrowDown,
+  AArrowUp, AArrowDown, Sigma, Shapes, PencilLine, TextCursorInput, Quote, BookOpen, Library, Users, SpellCheck2, FileCode2, SquarePen,
+  RefreshCw,
 } from 'lucide-react'
+import { SHAPE_KINDS } from '../objects/shapes'
+import type { CitationStyle, DocMeta } from '../model/types'
+import { StylesGallery } from './FeatureUI'
+import { galleryStyles } from '../features/styles'
 import { sanitizeHtml } from '../formats/formats'
 import { Menu } from './kit'
 import type { StyleDef } from '../model/types'
@@ -22,9 +27,10 @@ export type RibbonAction =
   | 'image' | 'link' | 'bookmark' | 'comment' | 'pageSetup' | 'header' | 'footer' | 'sectionBreak' | 'find' | 'wordCount'
   | 'print' | 'shortcuts' | 'report' | 'toggleSuggest' | 'acceptAll' | 'rejectAll' | 'zoomIn' | 'zoomOut' | 'zoomReset'
   | 'theme' | 'panel' | 'pageNumber' | 'orientation' | 'margins-normal' | 'margins-narrow' | 'margins-wide' | 'size-A4' | 'size-Letter' | 'marks'
-  | 'formatPainter'
+  | 'formatPainter' | 'equation' | 'textbox' | 'draw' | `shape-${string}` | 'editObject' | 'citation' | 'sources' | 'bibliography'
+  | 'updateCitations' | `citationStyle-${CitationStyle}` | 'mailMerge' | 'mergeField' | 'proofing' | 'customXml' | 'newStyle'
 
-const TABS = ['Home', 'Insert', 'Layout', 'Review', 'View'] as const
+const TABS = ['Home', 'Insert', 'Layout', 'References', 'Mailings', 'Review', 'View'] as const
 
 export function Ribbon(props: {
   editor: Editor
@@ -37,6 +43,9 @@ export function Ribbon(props: {
   showMarks: boolean
   onAction: (a: RibbonAction) => void
   painterActive: boolean
+  meta: DocMeta
+  onApplyStyle: (s: import('../model/types').StyleDef) => void
+  onModifyStyle: (s: import('../model/types').StyleDef) => void
 }) {
   const toast = useToast()
   const { editor, readOnly, onAction } = props
@@ -58,6 +67,11 @@ export function Ribbon(props: {
         size: ts.fontSize ? parseFloat(ts.fontSize) : null,
         color: (ts.color as string) || '#000000',
         lineSpacing: para.lineRule === 'auto' || !para.lineRule ? (para.lineSpacing as number | null) : null,
+        objectSelected: (() => {
+          const sel = e.state.selection as any
+          const n = sel.node
+          return !!n && (n.type.name === 'shape' || (n.type.name === 'opaqueInline' && !!n.attrs.object))
+        })(),
         canUndo: e.can().undo?.() ?? false,
         canRedo: e.can().redo?.() ?? false,
         suggesting: isSuggesting(e.state),
@@ -126,14 +140,6 @@ export function Ribbon(props: {
   }
   const docFonts = [...new Set(props.styles.map((x) => x.fontFamily).filter(Boolean) as string[])]
   const fonts = [...new Set([props.defaults.fontFamily, ...docFonts, ...FONTS])]
-  const paraStyles = props.styles.filter((x) => x.type === 'paragraph' && !/^heading\s*[1-6]$/i.test(x.name) && x.id !== 'Normal')
-
-  const styleValue = s.heading ? `h${s.heading}` : s.styleId ? `s:${s.styleId}` : 'p'
-  const applyStyle = (v: string) => {
-    if (v === 'p') c().setParagraph().setParagraphFormat({ styleId: null }).run()
-    else if (v.startsWith('h')) c().setHeading({ level: Number(v.slice(1)) as any }).run()
-    else c().setParagraph().setParagraphFormat({ styleId: v.slice(2) }).run()
-  }
 
   const onTabKey = (e: React.KeyboardEvent, i: number) => {
     const d = e.key === 'ArrowRight' ? 1 : e.key === 'ArrowLeft' ? -1 : 0
@@ -167,19 +173,6 @@ export function Ribbon(props: {
               <IconButton label="Redo" shortcut={`${mod}Shift+Z`} icon={<Redo2 size={17} />} disabled={dis || !s.canRedo} onClick={() => c().redo().run()} />
             </div>
             <div className="sc-group">
-              <select className="sc-select is-style" aria-label="Paragraph style" value={styleValue} disabled={dis} onChange={(e) => applyStyle(e.target.value)}>
-                <option value="p">Normal text</option>
-                {[1, 2, 3, 4, 5, 6].map((l) => (
-                  <option key={l} value={`h${l}`}>
-                    Heading {l}
-                  </option>
-                ))}
-                {paraStyles.map((st) => (
-                  <option key={st.id} value={`s:${st.id}`}>
-                    {st.name}
-                  </option>
-                ))}
-              </select>
               <select className="sc-select is-font" aria-label="Font" value={s.font || ''} disabled={dis} onChange={(e) => (e.target.value ? c().setFontFamily(e.target.value).run() : c().unsetFontFamily().run())}>
                 <option value="">{props.defaults.fontFamily} (default)</option>
                 {fonts.map((f) => (
@@ -197,7 +190,7 @@ export function Ribbon(props: {
                 ))}
               </select>
             </div>
-            <div className="sc-group">
+ <div className="sc-group">
               <IconButton label="Grow font" shortcut={`${mod}Shift+.`} icon={<AArrowUp size={17} />} disabled={dis} onClick={() => stepFont(1)} />
               <IconButton label="Shrink font" shortcut={`${mod}Shift+,`} icon={<AArrowDown size={17} />} disabled={dis} onClick={() => stepFont(-1)} />
               <Menu
@@ -259,6 +252,9 @@ export function Ribbon(props: {
                 onClick={() => (s.bullet || s.ordered ? c().sinkListItem('listItem').run() : c().changeIndent(720).run())}
               />
             </div>
+            <div className="sc-group sc-group-gallery" aria-label="Styles">
+              <StylesGallery styles={galleryStyles(props.meta)} current={s.styleId || (s.heading ? `Heading${s.heading}` : 'Normal')} disabled={dis} onApply={props.onApplyStyle} onModify={props.onModifyStyle} onNew={() => onAction('newStyle')} />
+            </div>
             <div className="sc-group">
               <IconButton label="Find and replace" shortcut={`${mod}F`} icon={<Search size={17} />} onClick={() => onAction('find')} />
             </div>
@@ -279,6 +275,22 @@ export function Ribbon(props: {
               <IconButton showLabel label="Horizontal line" icon={<Minus size={17} />} disabled={dis} onClick={() => c().setHorizontalRule().run()} />
               <IconButton showLabel label="Page numbers" icon={<Hash size={17} />} disabled={dis} onClick={() => onAction('pageNumber')} />
             </div>
+            <div className="sc-group" aria-label="Illustrations">
+              <Menu
+                ariaLabel="Shapes"
+                className="sc-shapes-menu"
+                label={<span className="sc-menu-btn"><Shapes size={17} aria-hidden="true" /> Shapes</span>}
+                items={Object.entries(SHAPE_KINDS).map(([k, v]) => ({ label: v, onClick: () => onAction(`shape-${k}`), disabled: dis }))}
+              />
+              <IconButton showLabel label="Text box" icon={<TextCursorInput size={17} />} disabled={dis} onClick={() => onAction('textbox')} />
+              <IconButton showLabel label="Draw" icon={<PencilLine size={17} />} disabled={dis} onClick={() => onAction('draw')} />
+              <IconButton showLabel label="Equation" icon={<Sigma size={17} />} disabled={dis} onClick={() => onAction('equation')} />
+            </div>
+            {s.objectSelected && (
+              <div className="sc-group sc-contextual" aria-label="Object tools">
+                <IconButton showLabel label="Edit object" icon={<SquarePen size={17} />} disabled={dis} onClick={() => onAction('editObject')} />
+              </div>
+            )}
             {s.table && <TableTools editor={editor} disabled={dis} />}
           </>
         )}
@@ -305,6 +317,48 @@ export function Ribbon(props: {
             </div>
           </>
         )}
+        {tab === 'References' && (
+          <>
+            <div className="sc-group" aria-label="Citations">
+              <IconButton showLabel label="Insert citation" icon={<Quote size={17} />} disabled={dis} onClick={() => onAction('citation')} />
+              <IconButton showLabel label="Sources" icon={<Library size={17} />} disabled={dis} onClick={() => onAction('sources')} />
+              <label className="sc-inline-select">
+                <span className="sc-group-label">Style</span>
+                <select className="sc-select" aria-label="Citation style" value={props.meta.citationStyle ?? 'APA'} disabled={dis} onChange={(e) => onAction(`citationStyle-${e.target.value as CitationStyle}`)}>
+                  <option value="APA">APA 7th</option>
+                  <option value="MLA">MLA 9th</option>
+                  <option value="Chicago">Chicago (author-date)</option>
+                </select>
+              </label>
+            </div>
+            <div className="sc-group" aria-label="Bibliography">
+              <IconButton showLabel label="Bibliography" icon={<BookOpen size={17} />} disabled={dis} onClick={() => onAction('bibliography')} />
+              <IconButton showLabel label="Update citations" icon={<RefreshCw size={17} />} disabled={dis} onClick={() => onAction('updateCitations')} />
+            </div>
+            <div className="sc-group">
+              <span className="sc-group-label">{(props.meta.sources ?? []).length} source{(props.meta.sources ?? []).length === 1 ? '' : 's'}</span>
+            </div>
+          </>
+        )}
+        {tab === 'Mailings' && (
+          <>
+            <div className="sc-group">
+              <IconButton showLabel label="Mail merge" icon={<Users size={17} />} onClick={() => onAction('mailMerge')} />
+              <Menu
+                ariaLabel="Insert merge field"
+                label={<span className="sc-menu-btn">«» Insert merge field</span>}
+                items={
+                  props.meta.mailMerge?.fields.length
+                    ? props.meta.mailMerge.fields.map((f) => ({ label: f, onClick: () => editor.chain().focus().insertContent({ type: 'field', attrs: { instr: `MERGEFIELD ${f}`, result: `«${f}»` } }).run(), disabled: dis }))
+                    : [{ label: 'Load recipients first (Mail merge)', onClick: () => onAction('mailMerge') }]
+                }
+              />
+            </div>
+            <div className="sc-group">
+              <span className="sc-group-label">{props.meta.mailMerge ? `${props.meta.mailMerge.records.length.toLocaleString()} recipients` : 'No recipients loaded'}</span>
+            </div>
+          </>
+        )}
         {tab === 'Review' && (
           <>
             <div className="sc-group">
@@ -315,7 +369,9 @@ export function Ribbon(props: {
             <div className="sc-group">
               <IconButton showLabel label="New comment" icon={<MessageSquarePlus size={17} />} disabled={dis} onClick={() => onAction('comment')} />
               <button className="sc-text-btn" onClick={() => onAction('wordCount')}>Word count</button>
+              <IconButton showLabel label="Check document" icon={<SpellCheck2 size={17} />} onClick={() => onAction('proofing')} />
               {props.hasOriginal && <IconButton showLabel label="Compatibility report" icon={<FileWarning size={17} />} onClick={() => onAction('report')} />}
+              {props.hasOriginal && <IconButton showLabel label="Custom XML" icon={<FileCode2 size={17} />} onClick={() => onAction('customXml')} />}
             </div>
           </>
         )}
