@@ -66,7 +66,7 @@ const PURIFY = {
 
 /** Sanitise untrusted HTML (imports, paste) before it reaches the editor. */
 export function sanitizeHtml(html: string): string {
-  // Word's "MsoPageBreak" markers and explicit CSS page breaks become SCRIBE page breaks
+  // explicit CSS page breaks in pasted or imported HTML become SCRIBE page breaks
   html = html.replace(/<br[^>]*style="[^"]*page-break-before:\s*always[^"]*"[^>]*>/gi, '<hr data-page-break>')
   return DOMPurify.sanitize(html, PURIFY) as unknown as string
 }
