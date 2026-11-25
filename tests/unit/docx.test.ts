@@ -157,7 +157,7 @@ describe('DOCX security and malformed input', () => {
   })
   it('rejects legacy binary .doc', async () => {
     const doc = new Uint8Array([0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1, 0, 0, 0, 0])
-    await expect(importDocx(doc)).rejects.toThrow(/legacy \.doc/)
+    await expect(importDocx(doc)).rejects.toThrow(/legacy binary \.doc/)
   })
 })
 
