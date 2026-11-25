@@ -75,7 +75,7 @@ export async function importFile(file: File): Promise<{ id: string; report: Comp
   if (ext === 'txt' || ext === 'md' || file.type.startsWith('text/')) {
     return { id: await createDocument(name, textToContent(await file.text()), emptyMeta()), report: [] }
   }
-  if (ext === 'doc') throw new Error('Legacy .doc files are not supported. Save the file as .docx in Word or LibreOffice first.')
+  if (ext === 'doc') throw new Error('Legacy .doc files are not supported. Save the file as .docx (for example with LibreOffice) first.')
   throw new Error('Unsupported file type. SCRIBE opens .docx, .html and .txt files.')
 }
 
