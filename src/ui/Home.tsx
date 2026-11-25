@@ -1,28 +1,15 @@
 import { useEffect, useRef, useState } from 'react'
-import { generateJSON } from '@tiptap/core'
-import { FileText, LogOut, Moon, Sun, Trash2, Upload, Users } from 'lucide-react'
-import { api, toBase64, type DocSummary, type User } from '../api'
+import { FileText, LogIn, LogOut, Moon, Sun, Trash2, Upload, UserRound, Users } from 'lucide-react'
+import { api, type DocSummary, type User } from '../api'
 import { TEMPLATES } from '../model/templates'
-import { emptyMeta, type CompatibilityIssue, type DocMeta, type PMNode } from '../model/types'
-import { importDocx } from '../docx/import'
-import { sanitizeHtml, textToContent } from '../formats/formats'
-import { schemaExtensions } from '../model/extensions'
-import { initialYState } from '../collab/session'
+import type { CompatibilityIssue } from '../model/types'
 import { Dialog, useToast } from './kit'
-import { CompatReport } from './Dialogs'
+import { AccountDialog, CompatReport } from './Dialogs'
+import { createFromTemplate, importFile as importToDoc, OPEN_ACCEPT, openDoc } from './docActions'
 import type { Theme } from './App'
 
-export async function createDocument(title: string, content: PMNode, meta: DocMeta, original?: Uint8Array, originalName?: string) {
-  const r = await api<{ id: string }>('/api/docs', {
-    method: 'POST',
-    body: { title, content, meta, yUpdate: initialYState(content, meta), original: original ? toBase64(original) : undefined, originalName },
-  })
-  return r.id
-}
-
-const MAX_IMPORT = 100 * 1024 * 1024
-
-export function Home({ user, onSignOut, theme, onToggleTheme }: { user: User; onSignOut: () => void; theme: Theme; onToggleTheme: () => void }) {
+export function Home({ user, onUser, onSignOut, theme, onToggleTheme }: { user: User; onUser: (u: User) => void; onSignOut: () => void; theme: Theme; onToggleTheme: () => void }) {
+  const [account, setAccount] = useState(false)
   const [docs, setDocs] = useState<DocSummary[] | null>(null)
   const [busy, setBusy] = useState('')
   const [report, setReport] = useState<{ issues: CompatibilityIssue[]; id: string } | null>(null)
@@ -40,14 +27,12 @@ export function Home({ user, onSignOut, theme, onToggleTheme }: { user: User; on
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  const open = (id: string) => (location.hash = `#/doc/${id}`)
+  const open = openDoc
 
   const fromTemplate = async (tid: string) => {
-    const t = TEMPLATES.find((x) => x.id === tid)!
     setBusy('Creating document…')
     try {
-      const d = t.build()
-      open(await createDocument(t.id === 'blank' || t.id === 'blank-a4' ? 'Untitled document' : t.name, d.content, d.meta))
+      open(await createFromTemplate(tid))
     } catch (e: any) {
       toast(e.message, 'error')
     } finally {
@@ -56,29 +41,13 @@ export function Home({ user, onSignOut, theme, onToggleTheme }: { user: User; on
   }
 
   const importFile = async (file: File) => {
-    if (file.size > MAX_IMPORT) return toast('That file is larger than 100 MB.', 'error')
-    const name = file.name.replace(/\.(docx|html?|txt|md)$/i, '')
-    setBusy(`Importing ${file.name}…`)
+    setBusy(`Opening ${file.name}…`)
     try {
-      const ext = file.name.split('.').pop()?.toLowerCase()
-      if (ext === 'docx' || ext === 'docm' || ext === 'dotx') {
-        const bytes = new Uint8Array(await file.arrayBuffer())
-        const r = await importDocx(bytes)
-        const title = r.doc.meta.metadata.title || name
-        const id = await createDocument(title, r.doc.content, r.doc.meta, bytes, file.name)
-        if (r.report.length) setReport({ issues: r.report, id })
-        else open(id)
-      } else if (ext === 'html' || ext === 'htm') {
-        const html = sanitizeHtml(await file.text())
-        const content = generateJSON(html, schemaExtensions({ collaborative: true })) as PMNode
-        open(await createDocument(name, content, emptyMeta()))
-      } else if (ext === 'txt' || ext === 'md' || file.type.startsWith('text/')) {
-        open(await createDocument(name, textToContent(await file.text()), emptyMeta()))
-      } else if (ext === 'doc') {
-        toast('Legacy .doc files are not supported. Save the file as .docx in Word or LibreOffice first.', 'error')
-      } else toast('Unsupported file type. SCRIBE opens .docx, .html and .txt files.', 'error')
+      const r = await importToDoc(file)
+      if (r.report.length) setReport({ issues: r.report, id: r.id })
+      else open(r.id)
     } catch (e: any) {
-      toast(`Could not import ${file.name}: ${e.message}`, 'error')
+      toast(`Could not open ${file.name}: ${e.message}`, 'error')
     } finally {
       setBusy('')
     }
@@ -98,18 +67,33 @@ export function Home({ user, onSignOut, theme, onToggleTheme }: { user: User; on
   return (
     <div className="sc-home">
       <header className="sc-home-bar">
-        <span className="sc-logo">SCRIBE</span>
+        <a className="sc-logo" href="#/" title="Back to your last document" style={{ textDecoration: 'none' }}>SCRIBE</a>
         <div className="sc-home-actions">
           <button className="sc-btn" onClick={onToggleTheme} aria-label={theme === 'dark' ? 'Use light theme' : 'Use dark theme'} title="Toggle theme">
             {theme === 'dark' ? <Sun size={18} /> : <Moon size={18} />}
           </button>
-          <span className="sc-user" title={user.email}>
-            {user.name}
-          </span>
-          <button className="sc-btn with-label" onClick={onSignOut}>
-            <LogOut size={16} />
-            <span>Sign out</span>
-          </button>
+          {user.guest ? (
+            <>
+              <button className="sc-btn with-label" onClick={() => setAccount(true)}>
+                <UserRound size={16} />
+                <span>Save to account</span>
+              </button>
+              <a className="sc-btn with-label" href="#/signin">
+                <LogIn size={16} />
+                <span>Sign in</span>
+              </a>
+            </>
+          ) : (
+            <>
+              <span className="sc-user" title={user.email}>
+                {user.name}
+              </span>
+              <button className="sc-btn with-label" onClick={onSignOut}>
+                <LogOut size={16} />
+                <span>Sign out</span>
+              </button>
+            </>
+          )}
         </div>
       </header>
       <main
@@ -127,7 +111,7 @@ export function Home({ user, onSignOut, theme, onToggleTheme }: { user: User; on
             <button className="sc-primary with-icon" onClick={() => fileRef.current?.click()} disabled={!!busy}>
               <Upload size={16} /> Open file…
             </button>
-            <input ref={fileRef} type="file" hidden accept=".docx,.docm,.dotx,.html,.htm,.txt,.md,.doc" onChange={(e) => { const f = e.target.files?.[0]; e.target.value = ''; if (f) importFile(f) }} />
+            <input ref={fileRef} type="file" hidden accept={OPEN_ACCEPT} onChange={(e) => { const f = e.target.files?.[0]; e.target.value = ''; if (f) importFile(f) }} />
           </div>
           <div className="sc-templates">
             {TEMPLATES.map((t) => (
@@ -184,6 +168,7 @@ export function Home({ user, onSignOut, theme, onToggleTheme }: { user: User; on
         </section>
       </main>
       {report && <CompatReport issues={report.issues} title="Import report" onClose={() => open(report.id)} actionLabel="Open document" />}
+      {account && <AccountDialog user={user} onUser={onUser} onClose={() => setAccount(false)} />}
       {confirmDelete && (
         <Dialog
           title="Delete document?"
