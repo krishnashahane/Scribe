@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { EditorContent, useEditor, type Editor } from '@tiptap/react'
 import { generateHTML } from '@tiptap/core'
 import Collaboration from '@tiptap/extension-collaboration'
@@ -19,6 +19,7 @@ import { contentToText, documentToHtml, download, safeFilename, sanitizeHtml } f
 import { Ribbon, type RibbonAction } from './Ribbon'
 import { AiPanel, ChangesPanel, CommentsPanel, FindBar, PagesPanel, VersionsPanel } from './Panels'
 import { createFromTemplate, importFile, OPEN_ACCEPT, openDoc } from './docActions'
+import { downloadOriginal, MAX_IMAGE_BYTES, uploadImage } from '../blobs'
 import {
   AccountDialog, CompatReport, HeaderFooterDialog, LinkDialog, PageSetupDialog, PropertiesDialog, ShareDialog, ShortcutsDialog, TextPrompt, WordCountDialog,
 } from './Dialogs'
@@ -27,7 +28,7 @@ import type { CompatibilityIssue } from '../model/types'
 
 type Panel = 'pages' | 'comments' | 'changes' | 'versions' | 'ai'
 type DialogState =
-  | { kind: 'pageSetup' }
+  | { kind: 'pageSetup'; section: number }
   | { kind: 'hf'; which: 'header' | 'footer'; section: number; first: boolean }
   | { kind: 'link' }
   | { kind: 'bookmark' }
@@ -43,6 +44,7 @@ interface DocInfo {
   title: string
   role: 'owner' | 'editor' | 'commenter' | 'viewer'
   hasOriginal: boolean
+  originalParts: number
   originalName: string | null
   meta: DocMeta
 }
@@ -61,8 +63,8 @@ export function EditorScreen({ docId, user, onUser, theme, onToggleTheme }: { do
       .then((d) => {
         if (cancelled) return
         localStorage.setItem('scribe-last-doc', docId)
-        setInfo({ title: d.title, role: d.role, hasOriginal: d.hasOriginal, originalName: d.originalName, meta: migrateDocument({ content: d.content, meta: d.meta }).meta })
-        s = openSession(docId, setStatus)
+        setInfo({ title: d.title, role: d.role, hasOriginal: d.hasOriginal, originalParts: d.originalParts ?? 0, originalName: d.originalName, meta: migrateDocument({ content: d.content, meta: d.meta }).meta })
+        s = openSession(docId, setStatus, d.role === 'viewer' || d.role === 'commenter')
         setSession(s)
         // render once the local (IndexedDB) or remote state has arrived, so the editor never starts empty
         Promise.race([s.whenSynced, s.local.whenSynced.then(() => (s!.ydoc.getXmlFragment('default').length ? undefined : s!.whenSynced))]).then(() => !cancelled && setReady(true))
@@ -108,8 +110,9 @@ function DocEditor({ docId, info, session, status, user, onUser, theme, onToggle
     }
   }, [ymeta, info.meta])
   const [meta, setMetaState] = useState<DocMeta>(readMeta)
-  const metaRef = useRef(meta)
-  metaRef.current = meta
+  // Values read by editor plugins and timers outside React rendering (pagination, autosave, print).
+  const [live] = useState(() => new LiveState(meta, Number(localStorage.getItem('scribe-zoom')) || 1))
+  useLayoutEffect(() => live.setMeta(meta), [live, meta])
   const [title, setTitle] = useState(info.title)
   const [pages, setPages] = useState<PageInfo[]>([])
   // like Word, the navigation pane starts closed; remember the user's choice
@@ -123,16 +126,13 @@ function DocEditor({ docId, info, session, status, user, onUser, theme, onToggle
     })
   const [dialog, setDialog] = useState<DialogState>(null)
   const [find, setFindOpen] = useState<null | { replace: boolean }>(null)
-  const [zoom, setZoom] = useState(() => Number(localStorage.getItem('scribe-zoom')) || 1)
-  const zoomRef = useRef(zoom)
-  zoomRef.current = zoom
-  const gapRef = useRef(24)
+  const [zoom, setZoom] = useState(() => live.zoom)
+  useLayoutEffect(() => live.setZoom(zoom), [live, zoom])
   const [showMarks, setShowMarks] = useState(false)
   const [painter, setPainter] = useState<null | { marks: any[]; para: Record<string, any> }>(null)
   const [composingComment, setComposingComment] = useState(false)
   const [saveState, setSaveState] = useState<'saved' | 'saving' | 'error'>('saved')
-  const dirty = useRef(false)
-  const lastVersionAt = useRef(Date.now())
+
   const imageInput = useRef<HTMLInputElement>(null)
   const openInput = useRef<HTMLInputElement>(null)
   const newDocument = async (template = 'blank') => {
@@ -161,13 +161,13 @@ function DocEditor({ docId, info, session, status, user, onUser, theme, onToggle
   const setMeta = useCallback(
     (f: (m: DocMeta) => DocMeta) => {
       if (readOnly) return
-      const next = f(metaRef.current)
-      metaRef.current = next
+      const next = f(live.meta)
+      live.setMeta(next)
       ymeta.set('meta', JSON.stringify(next))
       setMetaState(next)
-      dirty.current = true
+      live.markDirty()
     },
-    [ymeta, readOnly],
+    [ymeta, readOnly, live],
   )
 
   const editor = useEditor(
@@ -178,12 +178,12 @@ function DocEditor({ docId, info, session, status, user, onUser, theme, onToggle
         ...schemaExtensions({ collaborative: true }),
         Collaboration.configure({ document: session.ydoc, field: 'default' }),
         CollaborationCaret.configure({ provider: session.provider, user: { name: user.name, color: userColor(user.id) } }),
-        Pagination.configure({ getSections: () => metaRef.current.sections, getGap: () => gapRef.current, getScale: () => zoomRef.current, onLayout: setPages }),
+        Pagination.configure({ getSections: () => live.meta.sections, getGap: () => live.gap, getScale: () => live.zoom, onLayout: setPages }),
         FindReplace,
         Suggesting.configure({ author: () => user.name }),
         SectionSync.configure({
           onSections: (count, removed) => {
-            const m = metaRef.current
+            const m = live.meta
             if (m.sections.length === count && !removed.length) return
             let sections = m.sections.filter((_, i) => !removed.includes(i))
             if (sections.length > count) sections = [...sections.slice(0, count - 1), sections[sections.length - 1]]
@@ -213,18 +213,17 @@ function DocEditor({ docId, info, session, status, user, onUser, theme, onToggle
         },
       },
       onUpdate: () => {
-        dirty.current = true
+        live.markDirty()
       },
     },
     [session],
   )
 
   // ---- autosave snapshot (content lives in Yjs; this snapshot feeds listings, exports on other devices and versions)
-  const snapshot = useCallback((): ScribeDocument => ({ version: 1, content: editor!.getJSON() as PMNode, meta: metaRef.current }), [editor])
+  const snapshot = useCallback((): ScribeDocument => ({ version: 1, content: editor!.getJSON() as PMNode, meta: live.meta }), [editor, live])
   const saveSnapshot = useCallback(
     async (keepalive = false) => {
-      if (readOnly || !editor || !dirty.current) return
-      dirty.current = false
+      if (readOnly || !editor || !live.takeDirty()) return
       setSaveState('saving')
       const d = snapshot()
       try {
@@ -233,17 +232,16 @@ function DocEditor({ docId, info, session, status, user, onUser, theme, onToggle
           return
         }
         await api(`/api/docs/${docId}`, { method: 'PATCH', body: { content: d.content, meta: d.meta } })
-        if (Date.now() - lastVersionAt.current > 10 * 60 * 1000) {
-          lastVersionAt.current = Date.now()
+        if (live.versionDue()) {
           await api(`/api/docs/${docId}/versions`, { method: 'POST', body: { content: d.content, meta: d.meta, auto: true } })
         }
         setSaveState('saved')
       } catch {
-        dirty.current = true
+        live.markDirty()
         setSaveState('error')
       }
     },
-    [editor, readOnly, docId, snapshot],
+    [editor, readOnly, docId, snapshot, live],
   )
   useEffect(() => {
     const t = setInterval(() => saveSnapshot(), 4000)
@@ -282,31 +280,33 @@ function DocEditor({ docId, info, session, status, user, onUser, theme, onToggle
     (file: File) => {
       if (!/^image\/(png|jpe?g|gif|webp|bmp)$/.test(file.type)) return toast('Unsupported image type. Use PNG, JPEG, GIF, WebP or BMP.', 'error')
       if (file.size > 15 * 1024 * 1024) return toast('Images must be smaller than 15 MB.', 'error')
-      const r = new FileReader()
-      r.onload = () => {
-        const src = String(r.result)
-        const img = new Image()
-        img.onload = () => {
-          const p = metaRef.current.sections[0].page
-          const maxW = twipToPx(p.width - p.marginLeft - p.marginRight)
-          const w = Math.min(img.naturalWidth, maxW)
-          const h = Math.round((img.naturalHeight * w) / img.naturalWidth)
+      if (file.size > MAX_IMAGE_BYTES) return toast('Images must be smaller than 4 MB.', 'error')
+      const local = URL.createObjectURL(file)
+      const img = new Image()
+      img.onload = async () => {
+        const p = live.meta.sections[0].page
+        const maxW = twipToPx(p.width - p.marginLeft - p.marginRight)
+        const w = Math.min(img.naturalWidth, maxW)
+        const h = Math.round((img.naturalHeight * w) / img.naturalWidth)
+        URL.revokeObjectURL(local)
+        try {
+          const src = await uploadImage(new Uint8Array(await file.arrayBuffer()), file.type)
           editor?.chain().focus().insertContent({ type: 'image', attrs: { src, width: Math.round(w), height: h, alt: file.name.replace(/\.[^.]+$/, '') } }).run()
+        } catch (e: any) {
+          toast(e.message, 'error')
         }
-        img.onerror = () => toast('That image could not be read.', 'error')
-        img.src = src
       }
-      r.readAsDataURL(file)
+      img.onerror = () => {
+        URL.revokeObjectURL(local)
+        toast('That image could not be read.', 'error')
+      }
+      img.src = local
     },
-    [editor, toast],
+    [editor, toast, live],
   )
 
   // ---- exports
-  const fetchOriginal = async () => {
-    if (!info.hasOriginal) return null
-    const res = await api<Response>(`/api/docs/${docId}/original`, { raw: true })
-    return new Uint8Array(await res.arrayBuffer())
-  }
+  const fetchOriginal = async () => (info.hasOriginal ? downloadOriginal(docId, info.originalParts) : null)
   const exportAs = async (fmt: 'docx' | 'html' | 'txt' | 'pdf') => {
     if (!editor) return
     try {
@@ -318,8 +318,7 @@ function DocEditor({ docId, info, session, status, user, onUser, theme, onToggle
         const { data, report } = await exportDocx(d, await fetchOriginal())
         const problems = await validatePackage(data)
         if (problems.length) {
-          console.error('DOCX validation problems', problems)
-          toast(`Export validation found ${problems.length} problem(s); the file was not downloaded. See the console for details.`, 'error')
+          toast(`Export stopped: the DOCX failed ${problems.length} structural check(s), so no file was downloaded. First problem: ${problems[0]}`, 'error')
           return
         }
         download(data as BlobPart, safeFilename(title, 'docx'), 'application/vnd.openxmlformats-officedocument.wordprocessingml.document')
@@ -336,21 +335,18 @@ function DocEditor({ docId, info, session, status, user, onUser, theme, onToggle
   }
 
   const printDoc = () => {
-    const p = metaRef.current.sections[0].page
+    const p = live.meta.sections[0].page
     const style = document.createElement('style')
     style.id = 'sc-print-page'
     style.textContent = `@page { size: ${(p.width / 1440).toFixed(3)}in ${(p.height / 1440).toFixed(3)}in; margin: 0 }`
     document.head.appendChild(style)
     document.documentElement.classList.add('is-printing')
-    const prevZoom = zoomRef.current
-    zoomRef.current = 1
-    gapRef.current = 0
+    live.beginPrint()
     repaginate(editor?.view, true)
     const done = () => {
       document.documentElement.classList.remove('is-printing')
       style.remove()
-      gapRef.current = 24
-      zoomRef.current = prevZoom
+      live.endPrint()
       repaginate(editor?.view, true)
       window.removeEventListener('afterprint', done)
     }
@@ -384,7 +380,7 @@ function DocEditor({ docId, info, session, status, user, onUser, theme, onToggle
       if (n.type.name === 'sectionBreak' && p < pos) sec = n.attrs.section + 1
       return n.isBlock && n.type.name !== 'table'
     })
-    return Math.min(sec, metaRef.current.sections.length - 1)
+    return Math.min(sec, live.meta.sections.length - 1)
   }
 
   const updateSections = (idx: number | 'all', f: (s: DocMeta['sections'][number]) => DocMeta['sections'][number]) =>
@@ -399,7 +395,7 @@ function DocEditor({ docId, info, session, status, user, onUser, theme, onToggle
   }
 
   const openHF = (which: 'header' | 'footer', section = currentSection(), page?: PageInfo) => {
-    const sec = metaRef.current.sections[section]
+    const sec = live.meta.sections[section]
     const first = !!(sec?.titlePage && page?.firstOfSection)
     setDialog({ kind: 'hf', which, section, first })
   }
@@ -419,12 +415,12 @@ function DocEditor({ docId, info, session, status, user, onUser, theme, onToggle
         setPanel('comments')
         return setComposingComment(true)
       case 'pageSetup':
-        return setDialog({ kind: 'pageSetup' })
+        return setDialog({ kind: 'pageSetup', section: currentSection() })
       case 'header':
       case 'footer':
         return openHF(a, sec)
       case 'pageNumber': {
-        const key = metaRef.current.sections[sec].footerDefault
+        const key = live.meta.sections[sec].footerDefault
         if (!key) {
           const k = `new:footer-${newNodeId()}`
           setMeta((m) => ({
@@ -559,7 +555,7 @@ function DocEditor({ docId, info, session, status, user, onUser, theme, onToggle
       } else if (e.shiftKey && (e.key === '>' || e.key === '<' || e.code === 'Period' || e.code === 'Comma') && editor && !readOnly) {
         e.preventDefault()
         const SZ = [8, 9, 10, 10.5, 11, 12, 14, 16, 18, 20, 24, 28, 32, 36, 48, 72]
-        const cur = parseFloat(editor.getAttributes('textStyle').fontSize) || metaRef.current.defaults.fontSizePt
+        const cur = parseFloat(editor.getAttributes('textStyle').fontSize) || live.meta.defaults.fontSizePt
         const up = e.key === '>' || e.code === 'Period'
         const next = up ? SZ.find((x) => x > cur) ?? cur + 12 : [...SZ].reverse().find((x) => x < cur) ?? Math.max(1, cur - 1)
         editor.chain().focus().setFontSize(`${next}pt`).run()
@@ -637,7 +633,7 @@ function DocEditor({ docId, info, session, status, user, onUser, theme, onToggle
             { label: 'Download as web page (.html)', onClick: () => exportAs('html') },
             { label: 'Download as plain text (.txt)', onClick: () => exportAs('txt') },
             'sep',
-            { label: 'Page setup…', onClick: () => setDialog({ kind: 'pageSetup' }), disabled: readOnly },
+            { label: 'Page setup…', onClick: () => setDialog({ kind: 'pageSetup', section: currentSection() }), disabled: readOnly },
             { label: 'Document properties…', onClick: () => setDialog({ kind: 'props' }) },
             { label: 'Share…', onClick: () => setDialog({ kind: 'share' }) },
             'sep',
@@ -742,7 +738,7 @@ function DocEditor({ docId, info, session, status, user, onUser, theme, onToggle
       {dialog?.kind === 'pageSetup' && (
         <PageSetupDialog
           sections={meta.sections}
-          initialSection={currentSection()}
+          initialSection={dialog.section}
           onClose={() => setDialog(null)}
           onApply={(idx, page, o) => {
             updateSections(idx, (s) => ({ ...s, page, titlePage: o.titlePage }))
@@ -933,3 +929,46 @@ function buildStyleCss(meta: DocMeta) {
 }
 
 export { emptyMeta }
+
+/** Mutable values read outside rendering by editor plugins, timers and the print flow. */
+class LiveState {
+  gap = 24
+  /** unsaved changes since the last snapshot */
+  private dirty = false
+  markDirty() {
+    this.dirty = true
+  }
+  /** returns whether there were unsaved changes, and clears the flag */
+  takeDirty() {
+    const d = this.dirty
+    this.dirty = false
+    return d
+  }
+  private printZoom = 1
+  private lastVersionAt = Date.now()
+  constructor(
+    public meta: DocMeta,
+    public zoom: number,
+  ) {}
+  setMeta(m: DocMeta) {
+    this.meta = m
+  }
+  setZoom(z: number) {
+    this.zoom = z
+  }
+  beginPrint() {
+    this.printZoom = this.zoom
+    this.zoom = 1
+    this.gap = 0
+  }
+  endPrint() {
+    this.zoom = this.printZoom
+    this.gap = 24
+  }
+  /** true once every 10 minutes of editing: time for an automatic version */
+  versionDue() {
+    if (Date.now() - this.lastVersionAt < 10 * 60 * 1000) return false
+    this.lastVersionAt = Date.now()
+    return true
+  }
+}
