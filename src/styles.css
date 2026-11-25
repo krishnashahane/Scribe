@@ -409,9 +409,7 @@ textarea { height: auto; min-height: 70px; padding: 8px 10px; resize: vertical; 
 .sc-contextual { background: var(--accent-soft); border-radius: 8px; padding: 2px 6px; border-right: none; }
 .sc-menu-btn { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; }
 .sc-inline-select { display: inline-flex; align-items: center; gap: 6px; margin-left: 6px; }
-.sc-toolbar .sc-menu { position: static; }
-/* fixed with automatic offsets: the list opens under its trigger without being clipped by the scrolling toolbar */
-.sc-toolbar .sc-menu-list { position: fixed; top: auto; left: auto !important; right: auto !important; margin-top: 36px; max-height: 60vh; overflow: auto; }
+.sc-toolbar .sc-menu-list { max-height: 60vh; overflow: auto; }
 
 /* styles gallery */
 .sc-group-gallery { padding: 0 6px; }
