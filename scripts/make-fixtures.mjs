@@ -46,7 +46,7 @@ function png(w, h, rgb) {
 async function save(name, doc) {
   const buf = await Packer.toBuffer(doc)
   fs.writeFileSync(path.join(out, name), buf)
-  console.log('wrote', name, buf.length, 'bytes')
+  process.stdout.write(`wrote ${name} ${buf.length} bytes\n`)
 }
 
 // 1. simple
@@ -190,7 +190,7 @@ await save('large.docx', new Document({ sections: [{ children: big }] }))
   zip.file('customXml/item1.xml', '<root><value>kept</value></root>')
   const buf = await zip.generateAsync({ type: 'nodebuffer' })
   fs.writeFileSync(path.join(out, 'unsupported.docx'), buf)
-  console.log('wrote unsupported.docx', buf.length, 'bytes')
+  process.stdout.write(`wrote unsupported.docx ${buf.length} bytes\n`)
 }
 
 // 6. malformed inputs
@@ -207,6 +207,6 @@ fs.writeFileSync(path.join(out, 'not-a-zip.docx'), 'This is plain text pretendin
   const z3 = await JSZip.loadAsync(good)
   z3.file('word/bomb.bin', Buffer.alloc(50 * 1024 * 1024, 0))
   fs.writeFileSync(path.join(out, 'zipbomb.docx'), await z3.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE', compressionOptions: { level: 9 } }))
-  console.log('wrote malformed fixtures')
+  process.stdout.write('wrote malformed fixtures\n')
 }
 void BorderStyle
