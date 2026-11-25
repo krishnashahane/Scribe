@@ -75,7 +75,7 @@ export function parseStyles(doc: Document | null, theme: ThemeFonts): StyleSheet
     const i = onOff(wChild(r, 'i'))
     if (i != null) def.italic = i
     const c = wVal(wChild(r, 'color'))
-    if (c && c !== 'auto' && /^[0-9a-fA-F]{6}$/.test(c)) def.color = '#' + c
+    if (c && c !== 'auto' && /^[0-9a-fA-F]{6}$/.test(c)) def.color = '#' + c.toLowerCase()
     const ssp = wChild(p, 'spacing')
     const bf = intAttr(ssp, 'before')
     const af = intAttr(ssp, 'after')
@@ -83,6 +83,14 @@ export function parseStyles(doc: Document | null, theme: ThemeFonts): StyleSheet
     if (af != null) def.spacingAfter = af
     const ol = intAttr(wChild(p, 'outlineLvl'), 'val')
     if (ol != null) def.outlineLevel = ol
+    const u = wVal(wChild(r, 'u'))
+    if (u) def.underline = u !== 'none'
+    const jc = wVal(wChild(p, 'jc'))
+    if (jc) def.alignment = jc === 'center' ? 'center' : jc === 'right' || jc === 'end' ? 'right' : jc === 'both' || jc === 'distribute' ? 'justify' : 'left'
+    const ln = intAttr(ssp, 'line')
+    if (ln && (attr(ssp, 'lineRule') ?? 'auto') === 'auto') def.lineSpacing = Math.round((ln / 240) * 100) / 100
+    const next = wVal(wChild(s, 'next'))
+    if (next) def.next = next
     sheet.styles.set(id, def)
     const isDefault = attr(s, 'default')
     if (type === 'paragraph' && isDefault && ['1', 'true', 'on'].includes(isDefault.toLowerCase())) sheet.defaultParagraphStyle = id
@@ -127,6 +135,9 @@ export function resolvedStyles(sheet: StyleSheet): StyleDef[] {
       spacingBefore: resolve(sheet, id, 'spacingBefore'),
       spacingAfter: resolve(sheet, id, 'spacingAfter'),
       outlineLevel: resolve(sheet, id, 'outlineLevel'),
+      underline: resolve(sheet, id, 'underline'),
+      alignment: resolve(sheet, id, 'alignment'),
+      lineSpacing: resolve(sheet, id, 'lineSpacing'),
     })
   }
   return out
