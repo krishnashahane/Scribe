@@ -29,6 +29,8 @@ export interface User {
   id: string
   email: string
   name: string
+  /** local no-login identity; can be upgraded to a full account */
+  guest?: boolean
 }
 
 export interface DocSummary {
