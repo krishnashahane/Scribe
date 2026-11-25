@@ -102,6 +102,7 @@ export function download(data: BlobPart, filename: string, mime: string) {
 }
 
 export function safeFilename(name: string, ext: string) {
-  const base = (name || 'Untitled').replace(/[\\/:*?"<>|\u0000-\u001f]+/g, ' ').trim().slice(0, 120) || 'Untitled'
+  const cleaned = [...(name || 'Untitled')].map((ch) => (ch.charCodeAt(0) < 0x20 || '\\/:*?"<>|'.includes(ch) ? ' ' : ch)).join('')
+  const base = cleaned.replace(/ {2,}/g, ' ').trim().slice(0, 120) || 'Untitled'
   return `${base}.${ext}`
 }
