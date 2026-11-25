@@ -92,13 +92,22 @@ export function textContent(el: Element): string {
 // ---------- writing ----------
 
 export function esc(s: string): string {
-  return s
+  return stripInvalidXmlChars(s)
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;')
-    // XML 1.0 forbids most control characters
-    .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F￾￿]/g, '')
+}
+
+/** XML 1.0 allows tab, LF, CR and code points from U+0020, excluding U+FFFE/U+FFFF. */
+function isXmlChar(code: number) {
+  return code === 0x9 || code === 0xa || code === 0xd || (code >= 0x20 && code !== 0xfffe && code !== 0xffff)
+}
+
+export function stripInvalidXmlChars(s: string): string {
+  let out = ''
+  for (const ch of s) if (isXmlChar(ch.codePointAt(0)!)) out += ch
+  return out
 }
 
 export function el(name: string, attrs: Record<string, string | number | null | undefined> = {}, inner = ''): string {
