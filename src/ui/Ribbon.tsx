@@ -5,10 +5,13 @@ import {
   AlignCenter, AlignJustify, AlignLeft, AlignRight, Baseline, Bold, Bookmark, CheckCheck, Columns2, Highlighter, ImagePlus,
   IndentDecrease, IndentIncrease, Italic, Link, List, ListOrdered, MessageSquarePlus, Minus, PenLine, Printer, Redo2,
   RemoveFormatting, Ruler, Search, SeparatorHorizontal, Strikethrough, Subscript, Superscript, Table, Underline, Undo2, Ban,
-  ZoomIn, ZoomOut, Moon, Sun, PanelLeft, Hash, Keyboard, FileWarning, Pilcrow,
+  ZoomIn, ZoomOut, Moon, Sun, PanelLeft, Hash, Keyboard, FileWarning, Pilcrow, ClipboardPaste, Copy, Scissors, Paintbrush,
+  AArrowUp, AArrowDown,
 } from 'lucide-react'
+import { sanitizeHtml } from '../formats/formats'
+import { Menu } from './kit'
 import type { StyleDef } from '../model/types'
-import { IconButton, mod } from './kit'
+import { IconButton, mod, useToast } from './kit'
 import { isSuggesting } from '../editor/plugins'
 
 const FONTS = ['Calibri', 'Arial', 'Cambria', 'Georgia', 'Garamond', 'Helvetica', 'Times New Roman', 'Verdana', 'Trebuchet MS', 'Segoe UI', 'Courier New', 'Consolas']
@@ -19,6 +22,7 @@ export type RibbonAction =
   | 'image' | 'link' | 'bookmark' | 'comment' | 'pageSetup' | 'header' | 'footer' | 'sectionBreak' | 'find' | 'wordCount'
   | 'print' | 'shortcuts' | 'report' | 'toggleSuggest' | 'acceptAll' | 'rejectAll' | 'zoomIn' | 'zoomOut' | 'zoomReset'
   | 'theme' | 'panel' | 'pageNumber' | 'orientation' | 'margins-normal' | 'margins-narrow' | 'margins-wide' | 'size-A4' | 'size-Letter' | 'marks'
+  | 'formatPainter'
 
 const TABS = ['Home', 'Insert', 'Layout', 'Review', 'View'] as const
 
@@ -32,7 +36,9 @@ export function Ribbon(props: {
   hasOriginal: boolean
   showMarks: boolean
   onAction: (a: RibbonAction) => void
+  painterActive: boolean
 }) {
+  const toast = useToast()
   const { editor, readOnly, onAction } = props
   const [tab, setTab] = useState<(typeof TABS)[number]>('Home')
   const tabRefs = useRef<(HTMLButtonElement | null)[]>([])
@@ -59,6 +65,65 @@ export function Ribbon(props: {
     },
   })
   const c = () => editor.chain().focus()
+  const stepFont = (dir: 1 | -1) => {
+    const cur = s.size ?? props.defaults.fontSizePt
+    const next = dir > 0 ? SIZES.find((x) => x > cur) ?? cur + 12 : [...SIZES].reverse().find((x) => x < cur) ?? Math.max(1, cur - 1)
+    c().setFontSize(`${next}pt`).run()
+  }
+  const changeCase = (mode: 'upper' | 'lower' | 'sentence' | 'title') => {
+    const { from, to, empty } = editor.state.selection
+    if (empty) return toast('Select the text to change.', 'info')
+    const tr = editor.state.tr
+    let atSentenceStart = true
+    editor.state.doc.nodesBetween(from, to, (node, pos) => {
+      if (node.isTextblock) atSentenceStart = true
+      if (!node.isText) return
+      const s0 = Math.max(from, pos)
+      const e0 = Math.min(to, pos + node.nodeSize)
+      const text = node.text!.slice(s0 - pos, e0 - pos)
+      let out = text
+      if (mode === 'upper') out = text.toLocaleUpperCase()
+      else if (mode === 'lower') out = text.toLocaleLowerCase()
+      else if (mode === 'title') out = text.toLocaleLowerCase().replace(/(^|[\s\-–—"“(])(\p{L})/gu, (_m, a, b) => a + b.toLocaleUpperCase())
+      else {
+        out = ''
+        for (const ch of text.toLocaleLowerCase()) {
+          if (atSentenceStart && /\p{L}/u.test(ch)) {
+            out += ch.toLocaleUpperCase()
+            atSentenceStart = false
+          } else {
+            out += ch
+            if (/[.!?]/.test(ch)) atSentenceStart = true
+          }
+        }
+      }
+      if (out !== text) tr.replaceWith(tr.mapping.map(s0), tr.mapping.map(e0), editor.schema.text(out, node.marks))
+    })
+    editor.view.dispatch(tr)
+  }
+  const clip = async (op: 'cut' | 'copy' | 'paste') => {
+    editor.commands.focus()
+    if (op !== 'paste') {
+      if (!document.execCommand(op)) toast(`Use ${mod}${op === 'cut' ? 'X' : 'C'} to ${op}.`, 'info')
+      return
+    }
+    try {
+      if ('read' in navigator.clipboard) {
+        const items = await navigator.clipboard.read()
+        for (const item of items) {
+          if (item.types.includes('text/html')) {
+            const html = await (await item.getType('text/html')).text()
+            c().insertContent(sanitizeHtml(html)).run()
+            return
+          }
+        }
+      }
+      const text = await navigator.clipboard.readText()
+      if (text) c().insertContent(text.split(/\r?\n/).map((line) => ({ type: 'paragraph', content: line ? [{ type: 'text', text: line }] : [] }))).run()
+    } catch {
+      toast(`The browser blocked clipboard access. Use ${mod}V to paste.`, 'info')
+    }
+  }
   const docFonts = [...new Set(props.styles.map((x) => x.fontFamily).filter(Boolean) as string[])]
   const fonts = [...new Set([props.defaults.fontFamily, ...docFonts, ...FONTS])]
   const paraStyles = props.styles.filter((x) => x.type === 'paragraph' && !/^heading\s*[1-6]$/i.test(x.name) && x.id !== 'Normal')
@@ -91,6 +156,12 @@ export function Ribbon(props: {
       <div className="sc-toolbar" role="toolbar" aria-label={`${tab} tools`}>
         {tab === 'Home' && (
           <>
+            <div className="sc-group" aria-label="Clipboard">
+              <IconButton label="Paste" shortcut={`${mod}V`} icon={<ClipboardPaste size={17} />} disabled={dis} onClick={() => clip('paste')} />
+              <IconButton label="Cut" shortcut={`${mod}X`} icon={<Scissors size={17} />} disabled={dis} onClick={() => clip('cut')} />
+              <IconButton label="Copy" shortcut={`${mod}C`} icon={<Copy size={17} />} onClick={() => clip('copy')} />
+              <IconButton label="Format painter" icon={<Paintbrush size={17} />} active={props.painterActive} disabled={dis} onClick={() => onAction('formatPainter')} />
+            </div>
             <div className="sc-group">
               <IconButton label="Undo" shortcut={`${mod}Z`} icon={<Undo2 size={17} />} disabled={dis || !s.canUndo} onClick={() => c().undo().run()} />
               <IconButton label="Redo" shortcut={`${mod}Shift+Z`} icon={<Redo2 size={17} />} disabled={dis || !s.canRedo} onClick={() => c().redo().run()} />
@@ -125,6 +196,21 @@ export function Ribbon(props: {
                   </option>
                 ))}
               </select>
+            </div>
+            <div className="sc-group">
+              <IconButton label="Grow font" shortcut={`${mod}Shift+.`} icon={<AArrowUp size={17} />} disabled={dis} onClick={() => stepFont(1)} />
+              <IconButton label="Shrink font" shortcut={`${mod}Shift+,`} icon={<AArrowDown size={17} />} disabled={dis} onClick={() => stepFont(-1)} />
+              <Menu
+                ariaLabel="Change case"
+                className="sc-case-menu"
+                label={<span title="Change case" className="sc-case-label">Aa</span>}
+                items={[
+                  { label: 'Sentence case.', onClick: () => changeCase('sentence'), disabled: dis },
+                  { label: 'lowercase', onClick: () => changeCase('lower'), disabled: dis },
+                  { label: 'UPPERCASE', onClick: () => changeCase('upper'), disabled: dis },
+                  { label: 'Capitalize Each Word', onClick: () => changeCase('title'), disabled: dis },
+                ]}
+              />
             </div>
             <div className="sc-group">
               <IconButton label="Bold" shortcut={`${mod}B`} icon={<Bold size={17} />} active={s.bold} disabled={dis} onClick={() => c().toggleBold().run()} />
