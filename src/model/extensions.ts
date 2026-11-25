@@ -491,3 +491,23 @@ export function schemaExtensions(opts: { collaborative?: boolean } = {}) {
     StableIds,
   ]
 }
+
+declare module '@tiptap/core' {
+  interface Commands<ReturnType> {
+    paragraphFormat: {
+      /** Set paragraph-level OOXML formatting attributes on the selected blocks */
+      setParagraphFormat: (attrs: Record<string, any>) => ReturnType
+      /** Shift the left indent of the selected blocks by a number of twips */
+      changeIndent: (deltaTwips: number) => ReturnType
+    }
+    pageBreak: {
+      insertPageBreak: () => ReturnType
+    }
+    trackChanges: {
+      acceptAllChanges: () => ReturnType
+      rejectAllChanges: () => ReturnType
+      acceptChange: () => ReturnType
+      rejectChange: () => ReturnType
+    }
+  }
+}
