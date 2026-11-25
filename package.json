@@ -12,6 +12,7 @@
     "typecheck": "tsc -b"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^1.14.0",
     "@tiptap/extension-collaboration": "^3.35.0",
     "@tiptap/extension-collaboration-caret": "^3.35.0",
     "@tiptap/extension-highlight": "^3.35.0",
