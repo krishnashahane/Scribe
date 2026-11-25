@@ -40,7 +40,10 @@ export interface PageInfo {
 
 export interface PaginationOptions {
   getSections: () => SectionProps[]
-  gap: number
+  /** gap between pages in px (0 while printing) */
+  getGap: () => number
+  /** CSS zoom applied to the page canvas; client rects are divided by it */
+  getScale: () => number
   onLayout: (pages: PageInfo[]) => void
 }
 
@@ -114,16 +117,21 @@ function spacer(height: number, kind: 'block' | 'inline', page: number) {
 
 export function computeLayout(view: EditorView, opts: PaginationOptions): { decos: Decoration[]; pages: PageInfo[] } {
   const sections = opts.getSections()
+  const gap = opts.getGap()
+  const scale = opts.getScale() || 1
   const units = collectUnits(view.state.doc)
   const root = view.dom as HTMLElement
-  const originY = root.getBoundingClientRect().top + (parseFloat(getComputedStyle(root).paddingTop) || 0)
+  const originClient = root.getBoundingClientRect().top + (parseFloat(getComputedStyle(root).paddingTop) || 0) * scale
+  /** client px → unscaled layout px relative to the content box (without spacers) */
+  const toLayout = (clientY: number) => (clientY - originClient) / scale
+  const toClient = (layoutY: number) => originClient + layoutY * scale
   const pages: PageInfo[] = []
   const g0 = pageGeom(sections[0])
   const firstWidth = g0.width - g0.marginLeft - g0.marginRight
   const addPage = (section: number, firstOfSection: boolean) => {
     const g = pageGeom(sections[section] ?? sections[sections.length - 1])
     const prev = pages[pages.length - 1]
-    const top = prev ? prev.top + prev.height + opts.gap : -g.marginTop
+    const top = prev ? prev.top + prev.height + gap : -g.marginTop
     const restart = sections[section]?.pageNumberStart
     const number = firstOfSection && restart != null ? restart : (prev?.number ?? 0) + 1
     pages.push({ index: pages.length, section, top, ...g, firstOfSection, number })
@@ -141,8 +149,8 @@ export function computeLayout(view: EditorView, opts: PaginationOptions): { deco
     if (!dom || !(dom instanceof HTMLElement)) continue
     const rect = dom.getBoundingClientRect()
     if (!rect.height && !rect.width) continue
-    let top = rect.top - originY + offset
-    let bottom = rect.bottom - originY + offset
+    let top = toLayout(rect.top) + offset
+    let bottom = toLayout(rect.bottom) + offset
     // section width differs from the first section (e.g. landscape) → widen the block
     const sec = sections[u.section]
     if (sec && u.section !== 0) {
@@ -174,10 +182,10 @@ export function computeLayout(view: EditorView, opts: PaginationOptions): { deco
       let splitPos: number | null = null
       let lineTop = 0
       if (u.textblock && u.node.content.size > 0) {
-        const r = splitTextblock(view, u, dom, contentBottom(page) - offset + originY)
+        const r = splitTextblock(view, u, dom, toClient(contentBottom(page) - offset))
         if (r) {
           splitPos = r.pos
-          lineTop = r.lineTop - originY + offset
+          lineTop = toLayout(r.lineTop) + offset
         }
       }
       const prevPage = page
@@ -247,7 +255,7 @@ function splitTextblock(view: EditorView, u: Unit, dom: HTMLElement, limitClient
 export const Pagination = Extension.create<PaginationOptions>({
   name: 'pagination',
   addOptions() {
-    return { getSections: () => [], gap: 24, onLayout: () => {} }
+    return { getSections: () => [], getGap: () => 24, getScale: () => 1, onLayout: () => {} }
   },
   addProseMirrorPlugins() {
     const opts = this.options
@@ -293,6 +301,10 @@ export const Pagination = Extension.create<PaginationOptions>({
           const onResize = () => schedule(50)
           window.addEventListener('resize', onResize)
           ;(view as any).__scribeRepaginate = () => schedule(0)
+          ;(view as any).__scribeRepaginateNow = () => {
+            if (timer) clearTimeout(timer)
+            run()
+          }
           document.fonts?.ready.then(() => schedule(0))
           schedule(0)
           return {
@@ -310,6 +322,7 @@ export const Pagination = Extension.create<PaginationOptions>({
   },
 })
 
-export function repaginate(view: EditorView | undefined) {
-  ;(view as any)?.__scribeRepaginate?.()
+export function repaginate(view: EditorView | undefined, now = false) {
+  if (now) (view as any)?.__scribeRepaginateNow?.()
+  else (view as any)?.__scribeRepaginate?.()
 }
