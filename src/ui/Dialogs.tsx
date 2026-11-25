@@ -436,3 +436,52 @@ export function ShortcutsDialog({ onClose }: { onClose: () => void }) {
     </Dialog>
   )
 }
+
+/** Turn the local no-login identity into a full account (documents are kept), or sign in elsewhere. */
+export function AccountDialog({ user, onUser, onClose }: { user: { name: string; email: string; guest?: boolean }; onUser: (u: any) => void; onClose: () => void }) {
+  const [name, setName] = useState(user.guest ? '' : user.name)
+  const [email, setEmail] = useState('')
+  const [password, setPassword] = useState('')
+  const [error, setError] = useState('')
+  const toast = useToast()
+  const save = async (e: React.FormEvent) => {
+    e.preventDefault()
+    setError('')
+    try {
+      const r = await api<{ user: any }>('/api/auth/upgrade', { method: 'POST', body: { name, email, password } })
+      onUser(r.user)
+      toast('Account created. Your documents are saved to it.', 'success')
+      onClose()
+    } catch (err: any) {
+      setError(err.message)
+    }
+  }
+  if (!user.guest)
+    return (
+      <Dialog title="Account" onClose={onClose} footer={<button className="sc-primary" onClick={onClose}>Close</button>}>
+        <p>
+          Signed in as <strong>{user.name}</strong> ({user.email}).
+        </p>
+      </Dialog>
+    )
+  return (
+    <Dialog title="Save your work to an account" onClose={onClose} footer={<><button onClick={() => (location.hash = '#/signin')}>Sign in instead</button><span className="sc-spacer" /><button onClick={onClose}>Not now</button><button className="sc-primary" type="submit" form="sc-upgrade">Create account</button></>}>
+      <p className="sc-muted">You're using SCRIBE without an account. Your documents are stored on this computer's SCRIBE server and tied to this browser. Create an account to keep them if browser data is cleared, open them on other devices, and let people share documents with you.</p>
+      <form id="sc-upgrade" className="sc-form" onSubmit={save}>
+        <label>
+          Name
+          <input value={name} onChange={(e) => setName(e.target.value)} autoComplete="name" />
+        </label>
+        <label>
+          Email
+          <input type="email" required value={email} onChange={(e) => setEmail(e.target.value)} autoComplete="email" />
+        </label>
+        <label>
+          Password
+          <input type="password" required minLength={8} value={password} onChange={(e) => setPassword(e.target.value)} autoComplete="new-password" />
+        </label>
+        {error && <p className="sc-error" role="alert">{error}</p>}
+      </form>
+    </Dialog>
+  )
+}
