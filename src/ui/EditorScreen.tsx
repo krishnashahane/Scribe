@@ -4,8 +4,20 @@ import { generateHTML } from '@tiptap/core'
 import Collaboration from '@tiptap/extension-collaboration'
 import CollaborationCaret from '@tiptap/extension-collaboration-caret'
 import {
-  ArrowLeft, Cloud, CloudOff, FileDown, History, Loader2, MessageSquare, PanelLeft, PenLine, Share2, Sparkles,
+  ArrowLeft, Cloud, CloudOff, FileDown, History, Loader2, MessageSquare, PanelLeft, PenLine, Share2, Sparkles, SpellCheck2, Users,
 } from 'lucide-react'
+import { Proofing } from '../features/grammar'
+import { mergeDocument } from '../features/merge'
+import { BIBLIOGRAPHY_TITLES, citationInstr, formatBibliography, formatCitation } from '../features/citations'
+import { applyParagraphStyle, citedTags, refreshCitations, styleFromSelection } from '../features/docOps'
+import { galleryStyles, headingLevelOfStyle } from '../features/styles'
+import { DEFAULT_SHAPE, SHAPE_KINDS, type ShapeAttrs, type ShapeKind } from '../objects/shapes'
+import { ommlToTree, toLinear } from '../objects/math'
+import type { ObjectInfo } from '../model/extensions'
+import type { StyleDef } from '../model/types'
+import { ChartDialog, CustomXmlDialog, DrawDialog, EquationDialog, ShapeDialog, SmartArtDialog, TextBoxDialog } from './ObjectDialogs'
+import { CitationDialog, MailMergePanel, ModifyStyleDialog, ProofingPanel, SourcesDialog } from './FeatureUI'
+import { createDocument } from './docActions'
 import { api, type User } from '../api'
 import { openSession, userColor, type CollabSession, type SyncStatus } from '../collab/session'
 import { schemaExtensions, newId as newNodeId } from '../model/extensions'
@@ -26,7 +38,7 @@ import {
 import { Menu, mod, useToast } from './kit'
 import type { CompatibilityIssue } from '../model/types'
 
-type Panel = 'pages' | 'comments' | 'changes' | 'versions' | 'ai'
+type Panel = 'pages' | 'comments' | 'changes' | 'versions' | 'ai' | 'proofing' | 'merge'
 type DialogState =
   | { kind: 'pageSetup'; section: number }
   | { kind: 'hf'; which: 'header' | 'footer'; section: number; first: boolean }
@@ -38,6 +50,14 @@ type DialogState =
   | { kind: 'wordCount' }
   | { kind: 'report'; issues: CompatibilityIssue[]; title: string; openId?: string }
   | { kind: 'account' }
+  | { kind: 'object'; pos: number }
+  | { kind: 'equation' }
+  | { kind: 'newShape'; shape: ShapeAttrs }
+  | { kind: 'draw' }
+  | { kind: 'customXml' }
+  | { kind: 'sources'; thenCite?: boolean }
+  | { kind: 'citation' }
+  | { kind: 'style'; style: StyleDef; isNew: boolean }
   | null
 
 interface DocInfo {
@@ -115,7 +135,7 @@ function DocEditor({ docId, info, session, status, user, onUser, theme, onToggle
   useLayoutEffect(() => live.setMeta(meta), [live, meta])
   const [title, setTitle] = useState(info.title)
   const [pages, setPages] = useState<PageInfo[]>([])
-  // like Word, the navigation pane starts closed; remember the user's choice
+  // the navigation pane starts closed; remember the user's choice
   const [panel, setPanelState] = useState<Panel | null>(() => (localStorage.getItem('scribe-panel') as Panel | null) || null)
   const setPanel = (p: Panel | null | ((cur: Panel | null) => Panel | null)) =>
     setPanelState((cur) => {
@@ -180,6 +200,7 @@ function DocEditor({ docId, info, session, status, user, onUser, theme, onToggle
         CollaborationCaret.configure({ provider: session.provider, user: { name: user.name, color: userColor(user.id) } }),
         Pagination.configure({ getSections: () => live.meta.sections, getGap: () => live.gap, getScale: () => live.zoom, onLayout: setPages }),
         FindReplace,
+        Proofing,
         Suggesting.configure({ author: () => user.name }),
         SectionSync.configure({
           onSections: (count, removed) => {
@@ -205,6 +226,14 @@ function DocEditor({ docId, info, session, status, user, onUser, theme, onToggle
           return false
         },
         transformPastedHTML: (html) => sanitizeHtml(html),
+        handleDoubleClickOn: (_view, _pos, node, nodePos) => {
+          if (readOnly) return false
+          if (node.type.name === 'shape' || (node.type.name === 'opaqueInline' && node.attrs.object)) {
+            setDialog({ kind: 'object', pos: nodePos })
+            return true
+          }
+          return false
+        },
         handleDrop: (_view, event) => {
           const files = [...(event.dataTransfer?.files ?? [])].filter((f) => f.type.startsWith('image/'))
           if (!files.length) return false
@@ -406,6 +435,19 @@ function DocEditor({ docId, info, session, status, user, onUser, theme, onToggle
     switch (a) {
       case 'image':
         return imageInput.current?.click()
+      case 'shape-rect':
+      case 'shape-roundRect':
+      case 'shape-ellipse':
+      case 'shape-triangle':
+      case 'shape-diamond':
+      case 'shape-rightArrow':
+      case 'shape-star5':
+      case 'shape-line': {
+        const kind = a.slice(6) as ShapeKind
+        if (!(kind in SHAPE_KINDS)) return
+        editor.chain().focus().insertContent({ type: 'shape', attrs: { ...DEFAULT_SHAPE, kind, ...(kind === 'line' ? { height: 4, stroke: '#1f2937', strokeWidth: 2 } : {}) } }).run()
+        return toast('Shape inserted. Double-click it to change its colour, size or text.', 'info')
+      }
       case 'link':
         return setDialog({ kind: 'link' })
       case 'bookmark':
@@ -490,6 +532,46 @@ function DocEditor({ docId, info, session, status, user, onUser, theme, onToggle
         return setPanel((p) => (p ? null : 'pages'))
       case 'marks':
         return setShowMarks((v) => !v)
+      case 'equation':
+        return setDialog({ kind: 'equation' })
+      case 'textbox':
+        return setDialog({ kind: 'newShape', shape: { ...DEFAULT_SHAPE, kind: 'rect', fill: '#ffffff', stroke: '#1f2937', strokeWidth: 1, width: 220, height: 90, text: 'Text box' } })
+      case 'draw':
+        return setDialog({ kind: 'draw' })
+      case 'editObject': {
+        const sel = editor.state.selection as any
+        if (sel.node) setDialog({ kind: 'object', pos: sel.from })
+        return
+      }
+      case 'citation':
+        return setDialog({ kind: 'citation' })
+      case 'sources':
+        return setDialog({ kind: 'sources' })
+      case 'bibliography': {
+        const m = live.meta
+        const style = m.citationStyle ?? 'APA'
+        if (!(m.sources ?? []).length) toast('The bibliography lists your sources. Add them from References → Sources.', 'info')
+        editor.chain().focus().insertContent([{ type: 'bibliography', attrs: { title: BIBLIOGRAPHY_TITLES[style], entries: formatBibliography(m.sources ?? [], style) } }, { type: 'paragraph' }]).run()
+        return
+      }
+      case 'updateCitations':
+        return toast(refreshCitations(editor, live.meta) ? 'Citations and bibliography updated.' : 'Citations and bibliography are up to date.', 'success')
+      case 'citationStyle-APA':
+      case 'citationStyle-MLA':
+      case 'citationStyle-Chicago': {
+        const style = a.slice('citationStyle-'.length) as 'APA' | 'MLA' | 'Chicago'
+        setMeta((m) => ({ ...m, citationStyle: style }))
+        refreshCitations(editor, { ...live.meta, citationStyle: style }, { retitle: true })
+        return
+      }
+      case 'mailMerge':
+        return setPanel('merge')
+      case 'proofing':
+        return setPanel('proofing')
+      case 'customXml':
+        return setDialog({ kind: 'customXml' })
+      case 'newStyle':
+        return setDialog({ kind: 'style', isNew: true, style: { id: '', name: 'New style', type: 'paragraph', basedOn: 'Normal', ...styleFromSelection(editor) } })
       case 'formatPainter': {
         if (painter) return setPainter(null)
         const { $from } = editor.state.selection
@@ -501,6 +583,90 @@ function DocEditor({ docId, info, session, status, user, onUser, theme, onToggle
         return toast('Format painter: select the text to apply this formatting to (Esc to cancel).', 'info')
       }
     }
+  }
+
+  // ---- objects (charts, diagrams, equations, text boxes, shapes)
+  /** Update the node a dialog was opened for; finds it again if collaborators moved it. */
+  const updateNodeAt = (pos: number, original: any, attrs: Record<string, any>) => {
+    if (!editor) return
+    let at = pos
+    const cur = editor.state.doc.nodeAt(pos)
+    if (!cur || cur.type.name !== original.type.name || cur.attrs.xml !== original.attrs.xml) {
+      at = -1
+      editor.state.doc.descendants((n, p) => {
+        if (at === -1 && n.type.name === original.type.name && n.attrs.xml === original.attrs.xml && JSON.stringify(n.attrs) === JSON.stringify(original.attrs)) at = p
+        return at === -1
+      })
+      if (at === -1) return toast('That object was changed or removed by someone else.', 'error')
+    }
+    editor.view.dispatch(editor.state.tr.setNodeMarkup(at, undefined, { ...editor.state.doc.nodeAt(at)!.attrs, ...attrs }))
+    setDialog(null)
+    editor.commands.focus()
+  }
+  const insertEquation = (xml: string) => {
+    let preview: string
+    try {
+      preview = toLinear(ommlToTree(xml))
+    } catch {
+      preview = 'Equation'
+    }
+    editor?.chain().focus().insertContent({ type: 'opaqueInline', attrs: { xml, label: 'Equation', preview, object: { kind: 'equation' } } }).run()
+    setDialog(null)
+  }
+  const insertDrawing = async (png: Blob, w: number, h: number) => {
+    try {
+      if (png.size > MAX_IMAGE_BYTES) return toast('The drawing is too large. Draw a smaller area.', 'error')
+      const p = live.meta.sections[0].page
+      const maxW = twipToPx(p.width - p.marginLeft - p.marginRight)
+      const scale = Math.min(1, maxW / w)
+      const src = await uploadImage(new Uint8Array(await png.arrayBuffer()), 'image/png')
+      editor?.chain().focus().insertContent({ type: 'image', attrs: { src, width: Math.round(w * scale), height: Math.round(h * scale), alt: 'Drawing' } }).run()
+      setDialog(null)
+    } catch (e: any) {
+      toast(e.message, 'error')
+    }
+  }
+
+  // ---- mail merge output
+  const mergedDoc = () => {
+    const data = live.meta.mailMerge
+    if (!data || !editor) throw new Error('Load recipients first.')
+    return mergeDocument(editor.getJSON() as PMNode, live.meta, data)
+  }
+  const mergeToNewDocument = async () => {
+    try {
+      toast('Merging…')
+      const m = mergedDoc()
+      await saveSnapshot()
+      const original = await fetchOriginal()
+      const id = await createDocument(`${title} (merged)`, m.content, m.meta, original ?? undefined, original ? `${title} (merged).docx` : undefined)
+      toast(`Merged ${live.meta.mailMerge!.records.length.toLocaleString()} recipients into a new document.`, 'success')
+      openDoc(id)
+    } catch (e: any) {
+      toast(`Merge failed: ${e.message}`, 'error')
+    }
+  }
+  const mergeToDocx = async () => {
+    try {
+      toast('Preparing merged DOCX…')
+      const m = mergedDoc()
+      const { data } = await exportDocx({ version: 1, content: m.content, meta: { ...m.meta, metadata: { ...m.meta.metadata, title: `${title} (merged)`, lastModifiedBy: user.name } } }, await fetchOriginal())
+      const problems = await validatePackage(data)
+      if (problems.length) return toast(`Merge stopped: the DOCX failed a structural check (${problems[0]}).`, 'error')
+      download(data as BlobPart, safeFilename(`${title} (merged)`, 'docx'), 'application/vnd.openxmlformats-officedocument.wordprocessingml.document')
+      toast('Merged DOCX downloaded.', 'success')
+    } catch (e: any) {
+      toast(`Merge failed: ${e.message}`, 'error')
+    }
+  }
+
+  // ---- styles
+  const saveStyle = (st: StyleDef) => {
+    setMeta((m) => {
+      const exists = m.styles.some((x) => x.id === st.id)
+      return { ...m, styles: exists ? m.styles.map((x) => (x.id === st.id ? { ...x, ...st } : x)) : [...m.styles, st] }
+    })
+    setDialog(null)
   }
 
   // ---- format painter: apply copied formatting to the next selection
@@ -628,13 +794,14 @@ function DocEditor({ docId, info, session, status, user, onUser, theme, onToggle
             { label: 'Save version', onClick: () => saveVersion().catch((e) => toast(e.message, 'error')), shortcut: `${mod}S`, disabled: readOnly },
             { label: 'Version history', onClick: () => setPanel('versions') },
             'sep',
-            { label: 'Download as Word (.docx)', onClick: () => exportAs('docx') },
+            { label: 'Download as DOCX (.docx)', onClick: () => exportAs('docx') },
             { label: 'Download as PDF (print)', onClick: () => exportAs('pdf'), shortcut: `${mod}P` },
             { label: 'Download as web page (.html)', onClick: () => exportAs('html') },
             { label: 'Download as plain text (.txt)', onClick: () => exportAs('txt') },
             'sep',
             { label: 'Page setup…', onClick: () => setDialog({ kind: 'pageSetup', section: currentSection() }), disabled: readOnly },
             { label: 'Document properties…', onClick: () => setDialog({ kind: 'props' }) },
+            { label: 'Custom XML data…', onClick: () => setDialog({ kind: 'customXml' }) },
             { label: 'Share…', onClick: () => setDialog({ kind: 'share' }) },
             'sep',
             { label: user.guest ? 'Save to an account…' : 'Account', onClick: () => setDialog({ kind: 'account' }) },
@@ -661,6 +828,9 @@ function DocEditor({ docId, info, session, status, user, onUser, theme, onToggle
         showMarks={showMarks}
         painterActive={!!painter}
         onAction={onAction}
+        meta={meta}
+        onApplyStyle={(st) => applyParagraphStyle(editor, st, live.meta, setMeta)}
+        onModifyStyle={(st) => setDialog({ kind: 'style', style: st, isNew: false })}
       />
       {find && <FindBar editor={editor} replace={find.replace} readOnly={readOnly} onClose={() => { setFindOpen(null); editor.commands.focus() }} />}
       <div className="sc-workspace">
@@ -671,6 +841,8 @@ function DocEditor({ docId, info, session, status, user, onUser, theme, onToggle
               ['comments', <MessageSquare size={18} key="i" />, 'Comments'],
               ['changes', <PenLine size={18} key="i" />, 'Tracked changes'],
               ['versions', <History size={18} key="i" />, 'Version history'],
+              ['proofing', <SpellCheck2 size={18} key="i" />, 'Proofing'],
+              ['merge', <Users size={18} key="i" />, 'Mail merge'],
               ['ai', <Sparkles size={18} key="i" />, 'AI assistant'],
             ] as const
           ).map(([k, icon, label]) => (
@@ -695,6 +867,8 @@ function DocEditor({ docId, info, session, status, user, onUser, theme, onToggle
             {panel === 'changes' && <ChangesPanel editor={editor} readOnly={readOnly} />}
             {panel === 'versions' && <VersionsPanel docId={docId} readOnly={readOnly} onSaveVersion={() => saveVersion()} onRestore={restore} />}
             {panel === 'ai' && <AiPanel editor={editor} readOnly={readOnly} />}
+            {panel === 'proofing' && <ProofingPanel editor={editor} readOnly={readOnly} />}
+            {panel === 'merge' && <MailMergePanel editor={editor} meta={meta} setMeta={setMeta} readOnly={readOnly} onMergeToDoc={mergeToNewDocument} onMergeToDocx={mergeToDocx} />}
           </aside>
         )}
         <main className="sc-canvas" aria-label="Document">
@@ -833,6 +1007,91 @@ function DocEditor({ docId, info, session, status, user, onUser, theme, onToggle
         />
       )}
       {dialog?.kind === 'account' && <AccountDialog user={user} onUser={onUser} onClose={() => setDialog(null)} />}
+      {dialog?.kind === 'object' && (() => {
+        const node = editor.state.doc.nodeAt(dialog.pos)
+        const close = () => setDialog(null)
+        if (!node) return null
+        if (node.type.name === 'shape') return <ShapeDialog initial={node.attrs as ShapeAttrs} onClose={close} onSave={(a) => updateNodeAt(dialog.pos, node, a)} />
+        const obj = node.attrs.object as ObjectInfo | null
+        if (!obj) return null
+        if (obj.kind === 'equation') return <EquationDialog xml={node.attrs.xml} onClose={close} onSave={(xml) => updateNodeAt(dialog.pos, node, { xml, preview: (() => { try { return toLinear(ommlToTree(xml)) } catch { return node.attrs.preview } })() })} />
+        if (obj.kind === 'textbox') return <TextBoxDialog xml={node.attrs.xml} onClose={close} onSave={(xml, preview) => updateNodeAt(dialog.pos, node, { xml, preview })} />
+        if (obj.kind === 'chart') return <ChartDialog chart={obj.chart} onClose={close} onSave={(chart) => updateNodeAt(dialog.pos, node, { object: { ...obj, chart }, preview: chart.title || 'Chart' })} />
+        if (obj.kind === 'smartart') return <SmartArtDialog data={obj.smartArt} onClose={close} onSave={(smartArt) => updateNodeAt(dialog.pos, node, { object: { ...obj, smartArt }, preview: smartArt.items.map((i) => i.text).filter(Boolean).join(' · ').slice(0, 200) })} />
+        return null
+      })()}
+      {dialog?.kind === 'equation' && <EquationDialog xml={null} onClose={() => setDialog(null)} onSave={insertEquation} />}
+      {dialog?.kind === 'newShape' && (
+        <ShapeDialog
+          initial={dialog.shape}
+          onClose={() => setDialog(null)}
+          onSave={(a) => {
+            editor.chain().focus().insertContent({ type: 'shape', attrs: a }).run()
+            setDialog(null)
+          }}
+        />
+      )}
+      {dialog?.kind === 'draw' && <DrawDialog onClose={() => setDialog(null)} onSave={insertDrawing} />}
+      {dialog?.kind === 'customXml' && (
+        <CustomXmlDialog
+          parts={meta.customXml ?? []}
+          readOnly={readOnly}
+          onClose={() => setDialog(null)}
+          onSave={(parts) => {
+            setMeta((m) => ({ ...m, customXml: parts }))
+            setDialog(null)
+            toast('Custom XML saved. Edited parts are written when you export to DOCX.', 'success')
+          }}
+        />
+      )}
+      {dialog?.kind === 'sources' && (
+        <SourcesDialog
+          sources={meta.sources ?? []}
+          style={meta.citationStyle ?? 'APA'}
+          cited={citedTags(editor)}
+          startNew={dialog.thenCite && !(meta.sources ?? []).length}
+          onClose={() => setDialog(null)}
+          onSave={(sources) => {
+            setMeta((m) => ({ ...m, sources }))
+            refreshCitations(editor, { ...live.meta, sources })
+            setDialog(dialog.thenCite ? { kind: 'citation' } : null)
+          }}
+        />
+      )}
+      {dialog?.kind === 'citation' && (
+        <CitationDialog
+          sources={meta.sources ?? []}
+          style={meta.citationStyle ?? 'APA'}
+          onClose={() => setDialog(null)}
+          onManage={() => setDialog({ kind: 'sources', thenCite: true })}
+          onInsert={(tags, page) => {
+            const found = tags.map((t) => (live.meta.sources ?? []).find((x) => x.tag === t)!).filter(Boolean)
+            editor.chain().focus().insertContent({ type: 'field', attrs: { instr: citationInstr(tags, page), result: formatCitation(found, live.meta.citationStyle ?? 'APA', page) } }).run()
+            setDialog(null)
+          }}
+        />
+      )}
+      {dialog?.kind === 'style' && (
+        <ModifyStyleDialog
+          style={dialog.style}
+          styles={galleryStyles(meta)}
+          isNew={dialog.isNew}
+          onFromSelection={() => styleFromSelection(editor)}
+          onClose={() => setDialog(null)}
+          onSave={(st) => {
+            saveStyle(st)
+            if (dialog.isNew) applyParagraphStyle(editor, st, { ...live.meta, styles: [...live.meta.styles, st] }, setMeta)
+          }}
+          onDelete={
+            dialog.style.custom && !dialog.isNew
+              ? () => {
+                  setMeta((m) => ({ ...m, styles: m.styles.filter((x) => x.id !== dialog.style.id) }))
+                  setDialog(null)
+                }
+              : undefined
+          }
+        />
+      )}
     </div>
   )
 }
@@ -923,7 +1182,14 @@ function buildStyleCss(meta: DocMeta) {
     if (s.color) r.push(`color:${s.color}`)
     if (s.spacingBefore != null) r.push(`margin-top:${twipToPx(s.spacingBefore)}px`)
     if (s.spacingAfter != null) r.push(`margin-bottom:${twipToPx(s.spacingAfter)}px`)
-    if (r.length) css += `.sc-doc [data-style-id="${esc(s.id)}"]{${r.join(';')}}`
+    if (s.underline != null) r.push(`text-decoration:${s.underline ? 'underline' : 'none'}`)
+    if (s.alignment) r.push(`text-align:${s.alignment}`)
+    if (s.lineSpacing) r.push(`line-height:${s.lineSpacing}`)
+    if (!r.length) continue
+    css += `.sc-doc [data-style-id="${esc(s.id)}"]{${r.join(';')}}`
+    // headings without an explicit style follow the document's (or edited) heading styles
+    const lvl = headingLevelOfStyle(s)
+    if (lvl && (s.modified || s.custom || meta.styles.includes(s))) css += `.sc-doc h${lvl}:not([data-style-id]){${r.join(';')}}`
   }
   return css
 }
