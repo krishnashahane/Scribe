@@ -5,7 +5,7 @@ import fs from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { openDb, roleFor, canEdit, canComment } from './db.js'
 import {
-  SESSION_COOKIE, clearCookie, createSession, destroySession, hashPassword, newId, parseCookies, rateLimiter, sessionCookie,
+  GUEST_DOMAIN, GUEST_TTL_MS, isGuestEmail, SESSION_COOKIE, clearCookie, createSession, destroySession, hashPassword, newId, parseCookies, rateLimiter, sessionCookie,
   userFromToken, verifyPassword,
 } from './auth.js'
 import { createCollab } from './collab.js'
@@ -60,13 +60,13 @@ export function createApp({ dbFile = path.join(here, '..', 'data', 'scribe.db'),
     const email = str(req.body?.email, 200).toLowerCase()
     const name = str(req.body?.name, 100) || email.split('@')[0]
     const password = typeof req.body?.password === 'string' ? req.body.password : ''
-    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return res.status(400).json({ error: 'Enter a valid email address.' })
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) || isGuestEmail(email)) return res.status(400).json({ error: 'Enter a valid email address.' })
     if (password.length < 8 || password.length > 200) return res.status(400).json({ error: 'Password must be 8–200 characters.' })
     if (db.prepare('SELECT 1 FROM users WHERE email = ?').get(email)) return res.status(409).json({ error: 'An account with this email already exists.' })
     const id = newId()
     db.prepare('INSERT INTO users (id, email, name, pass_hash, created) VALUES (?, ?, ?, ?, ?)').run(id, email, name, hashPassword(password), Date.now())
     res.setHeader('Set-Cookie', sessionCookie(createSession(db, id), secureCookies))
-    res.status(201).json({ user: { id, email, name } })
+    res.status(201).json({ user: publicUser({ id, email, name }) })
   })
 
   app.post('/api/auth/login', (req, res) => {
@@ -76,7 +76,7 @@ export function createApp({ dbFile = path.join(here, '..', 'data', 'scribe.db'),
     const u = db.prepare('SELECT id, email, name, pass_hash FROM users WHERE email = ?').get(email)
     if (!u || !verifyPassword(password, u.pass_hash)) return res.status(401).json({ error: 'Email or password is incorrect.' })
     res.setHeader('Set-Cookie', sessionCookie(createSession(db, u.id), secureCookies))
-    res.json({ user: { id: u.id, email: u.email, name: u.name } })
+    res.json({ user: publicUser({ id: u.id, email: u.email, name: u.name }) })
   })
 
   app.post('/api/auth/logout', (req, res) => {
@@ -85,7 +85,33 @@ export function createApp({ dbFile = path.join(here, '..', 'data', 'scribe.db'),
     res.json({ ok: true })
   })
 
-  app.get('/api/auth/me', (req, res) => res.json({ user: req.user ?? null }))
+  const publicUser = (u) => (u ? { ...u, guest: isGuestEmail(u.email) } : null)
+  app.get('/api/auth/me', (req, res) => res.json({ user: publicUser(req.user) }))
+
+  // No-login start: a private local identity per browser, like a desktop word processor.
+  // Guests cannot sign in with a password; they can upgrade to a full account later.
+  const guestLimit = rateLimiter(Math.max(authRateLimit, 20), 60_000)
+  app.post('/api/auth/guest', (req, res) => {
+    if (req.user) return res.json({ user: publicUser(req.user) })
+    if (!guestLimit('guest:' + req.ip)) return res.status(429).json({ error: 'Too many new sessions, wait a minute.' })
+    const id = newId()
+    db.prepare('INSERT INTO users (id, email, name, pass_hash, created) VALUES (?, ?, ?, ?, ?)').run(id, `${id.toLowerCase()}${GUEST_DOMAIN}`, 'You', '!guest', Date.now())
+    res.setHeader('Set-Cookie', sessionCookie(createSession(db, id, GUEST_TTL_MS), secureCookies, GUEST_TTL_MS))
+    res.status(201).json({ user: publicUser({ id, email: `${id.toLowerCase()}${GUEST_DOMAIN}`, name: 'You' }) })
+  })
+
+  // Turn the current guest into a full account, keeping all of its documents.
+  app.post('/api/auth/upgrade', requireUser, (req, res) => {
+    if (!isGuestEmail(req.user.email)) return res.status(400).json({ error: 'This is already a full account.' })
+    const email = str(req.body?.email, 200).toLowerCase()
+    const name = str(req.body?.name, 100) || email.split('@')[0]
+    const password = typeof req.body?.password === 'string' ? req.body.password : ''
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) || isGuestEmail(email)) return res.status(400).json({ error: 'Enter a valid email address.' })
+    if (password.length < 8 || password.length > 200) return res.status(400).json({ error: 'Password must be 8–200 characters.' })
+    if (db.prepare('SELECT 1 FROM users WHERE email = ?').get(email)) return res.status(409).json({ error: 'An account with this email already exists. Sign in instead.' })
+    db.prepare('UPDATE users SET email = ?, name = ?, pass_hash = ? WHERE id = ?').run(email, name, hashPassword(password), req.user.id)
+    res.json({ user: publicUser({ id: req.user.id, email, name }) })
+  })
 
   // ---- documents
   const docAccess = (need) => (req, res, next) => {
