@@ -223,7 +223,7 @@ export function HeaderFooterDialog(props: {
       <div className="sc-hf-box">
         <EditorContent editor={editor} />
       </div>
-      <p className="sc-muted">Page number fields update on every page and are exported as real Word fields.</p>
+      <p className="sc-muted">Page number fields update on every page and are exported as real page-number fields.</p>
     </Dialog>
   )
 }
