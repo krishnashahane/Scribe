@@ -118,7 +118,7 @@ export function el(name: string, attrs: Record<string, string | number | null | 
 
 /**
  * Sort serialized child elements by the order the schema requires.
- * Word rejects files whose property children are out of sequence.
+ * Strict readers reject files whose property children are out of sequence.
  */
 export function orderChildren(xmlFragments: string[], order: readonly string[]): string {
   const rank = (frag: string) => {
@@ -181,4 +181,13 @@ export function extraChildrenXml(parent: Element | null, handled: Set<string>): 
 /** Remove xmlns declarations that XMLSerializer adds to preserved fragments when the root already declares them. */
 export function stripRedundantNs(frag: string, declared: Record<string, string>): string {
   return frag.replace(/\s+xmlns:([A-Za-z0-9]+)="([^"]*)"/g, (m, p, uri) => (declared[p] === uri ? '' : m))
+}
+
+const FRAGMENT_NS = Object.entries(NS).map(([p, u]) => `xmlns:${p}="${u}"`).join(' ')
+
+/** Parse serialized element fragments (which may use any standard OOXML prefix) into elements. */
+export function splitFragmentsNs(xml: string): Element[] {
+  if (!xml) return []
+  const doc = parseXml(`<root ${FRAGMENT_NS}>${xml}</root>`, 'fragment')
+  return children(doc.documentElement)
 }
