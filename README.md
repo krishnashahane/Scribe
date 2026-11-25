@@ -1,6 +1,7 @@
 # SCRIBE
 
 A collaborative word processor built around one rule: **never lose or silently change a user's document.**
+It opens like Word: straight into a blank page, no sign-in required.
 SCRIBE opens Microsoft Word (`.docx`) files, lets you edit them on real pages, and writes them back
 with everything it doesn't understand preserved byte-for-byte.
 
@@ -20,6 +21,10 @@ npm run build
 npm start            # serves the app and API on http://127.0.0.1:8787
 ```
 
+Open the address and start typing. Each browser gets a private local identity automatically and SCRIBE
+reopens your last document. Accounts are optional (File → Save to an account): use one to share documents,
+open them on other devices, or keep them if browser data is cleared. Upgrading keeps every document.
+
 | Variable | Purpose |
 |---|---|
 | `PORT`, `HOST` | Server address (default `127.0.0.1:8787`) |
@@ -34,8 +39,8 @@ API keys stay on the server; the browser never sees them. Without a key the AI p
 ## Tests
 
 ```bash
-npm test                  # 31 unit/integration tests: DOCX import/export, security, server, collaboration
-npm run test:e2e          # 4 browser tests (Playwright + Chromium) against the production build
+npm test                  # 32 unit/integration tests: DOCX import/export, security, server, collaboration
+npm run test:e2e          # 6 browser tests (Playwright + Chromium) against the production build
 npm run fixtures          # regenerate the DOCX corpus in tests/fixtures
 npm run verify:python-docx  # open every exported file with python-docx (pip install python-docx)
 ```
@@ -73,7 +78,8 @@ immediately (crash/offline recovery) and synced over WebSockets to the server, w
 JSON snapshots are saved every 4 seconds while editing, automatic versions every 10 minutes, named versions on
 demand (`⌘/Ctrl+S`); any version can be previewed and restored, and restoring saves the current state first.
 
-**Security.** scrypt password hashes; HttpOnly SameSite=Strict session cookies; server-side role checks on
+**Security.** No-login guest identities are random, last a year, can't be signed into with a password,
+and can only reach their own documents. Accounts use scrypt password hashes; HttpOnly SameSite=Strict session cookies; server-side role checks on
 every route and WebSocket (viewers receive updates but their writes are dropped); CSRF header and Origin
 checks; CSP and hardening headers; rate limits on auth and AI; sanitised HTML import and paste; link and
 image URL allow-lists; XML entity and zip-bomb defences; all SQL parameterised.
