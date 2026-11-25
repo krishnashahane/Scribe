@@ -210,3 +210,77 @@ fs.writeFileSync(path.join(out, 'not-a-zip.docx'), 'This is plain text pretendin
   process.stdout.write('wrote malformed fixtures\n')
 }
 void BorderStyle
+
+// 7. editable objects: a column chart (with an embedded-workbook link), a SmartArt diagram with its
+// cached drawing, a custom XML part and a bibliography sources part, assembled by hand
+{
+  const base = await Packer.toBuffer(new Document({ sections: [{ children: [new Paragraph('Chart below'), new Paragraph('CHART_HERE'), new Paragraph('DIAGRAM_HERE'), new Paragraph('End')] }] }))
+  const zip = await JSZip.loadAsync(base)
+  const C = 'http://schemas.openxmlformats.org/drawingml/2006/chart'
+  const A = 'http://schemas.openxmlformats.org/drawingml/2006/main'
+  const R = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships'
+  const ser = (i, name, vals) =>
+    `<c:ser><c:idx val="${i}"/><c:order val="${i}"/><c:tx><c:strRef><c:f>Sheet1!$${'BC'[i]}$1</c:f><c:strCache><c:ptCount val="1"/><c:pt idx="0"><c:v>${name}</c:v></c:pt></c:strCache></c:strRef></c:tx>` +
+    `<c:spPr><a:solidFill><a:srgbClr val="${['4472C4', 'ED7D31'][i]}"/></a:solidFill></c:spPr><c:invertIfNegative val="0"/>` +
+    `<c:cat><c:strRef><c:f>Sheet1!$A$2:$A$4</c:f><c:strCache><c:ptCount val="3"/><c:pt idx="0"><c:v>Q1</c:v></c:pt><c:pt idx="1"><c:v>Q2</c:v></c:pt><c:pt idx="2"><c:v>Q3</c:v></c:pt></c:strCache></c:strRef></c:cat>` +
+    `<c:val><c:numRef><c:f>Sheet1!$${'BC'[i]}$2:$${'BC'[i]}$4</c:f><c:numCache><c:formatCode>General</c:formatCode><c:ptCount val="3"/>${vals.map((v, k) => `<c:pt idx="${k}"><c:v>${v}</c:v></c:pt>`).join('')}</c:numCache></c:numRef></c:val></c:ser>`
+  const chartXml =
+    `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<c:chartSpace xmlns:c="${C}" xmlns:a="${A}" xmlns:r="${R}"><c:roundedCorners val="0"/><c:chart><c:title><c:tx><c:rich><a:bodyPr/><a:lstStyle/><a:p><a:r><a:t>Quarterly sales</a:t></a:r></a:p></c:rich></c:tx><c:overlay val="0"/></c:title><c:autoTitleDeleted val="0"/>` +
+    `<c:plotArea><c:layout/><c:barChart><c:barDir val="col"/><c:grouping val="clustered"/><c:varyColors val="0"/>${ser(0, 'North', [10, 14, 9])}${ser(1, 'South', [7, 11, 15])}<c:gapWidth val="150"/><c:axId val="111"/><c:axId val="222"/></c:barChart>` +
+    `<c:catAx><c:axId val="111"/><c:scaling><c:orientation val="minMax"/></c:scaling><c:delete val="0"/><c:axPos val="b"/><c:numFmt formatCode="General" sourceLinked="1"/><c:tickLblPos val="nextTo"/><c:crossAx val="222"/><c:crosses val="autoZero"/><c:auto val="1"/><c:lblAlgn val="ctr"/><c:lblOffset val="100"/><c:noMultiLvlLbl val="0"/></c:catAx>` +
+    `<c:valAx><c:axId val="222"/><c:scaling><c:orientation val="minMax"/></c:scaling><c:delete val="0"/><c:axPos val="l"/><c:majorGridlines/><c:numFmt formatCode="General" sourceLinked="1"/><c:tickLblPos val="nextTo"/><c:crossAx val="111"/><c:crosses val="autoZero"/><c:crossBetween val="between"/></c:valAx></c:plotArea>` +
+    `<c:legend><c:legendPos val="b"/><c:overlay val="0"/></c:legend><c:plotVisOnly val="1"/></c:chart><c:externalData r:id="rId1"><c:autoUpdate val="0"/></c:externalData></c:chartSpace>`
+  zip.file('word/charts/chart1.xml', chartXml)
+  zip.file('word/charts/_rels/chart1.xml.rels', `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/package" Target="../embeddings/Workbook1.xlsx"/></Relationships>`)
+  zip.file('word/embeddings/Workbook1.xlsx', Buffer.from('PK placeholder workbook bytes'))
+  // SmartArt: three nodes under a doc root, presentation points mapping drawing shapes to nodes
+  const DGM = 'http://schemas.openxmlformats.org/drawingml/2006/diagram'
+  const DSP = 'http://schemas.microsoft.com/office/drawing/2008/diagram'
+  const node = (id, t) => `<dgm:pt modelId="${id}"><dgm:prSet phldrT="[Text]"/><dgm:spPr/><dgm:t><a:bodyPr/><a:lstStyle/><a:p><a:r><a:rPr lang="en-US"/><a:t>${t}</a:t></a:r></a:p></dgm:t></dgm:pt>`
+  const pres = (id, assoc) => `<dgm:pt modelId="${id}" type="pres"><dgm:prSet presAssocID="${assoc}" presName="node" presStyleLbl="node1" presStyleIdx="0" presStyleCnt="3"/><dgm:spPr/></dgm:pt>`
+  const dataXml =
+    `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<dgm:dataModel xmlns:dgm="${DGM}" xmlns:a="${A}"><dgm:ptLst><dgm:pt modelId="{D0}" type="doc"><dgm:prSet loTypeId="urn:diagrams/layout/default"/><dgm:spPr/><dgm:t><a:bodyPr/><a:lstStyle/><a:p><a:endParaRPr lang="en-US"/></a:p></dgm:t></dgm:pt>` +
+    node('{N1}', 'Plan') + node('{N2}', 'Build') + node('{N3}', 'Ship') + pres('{P1}', '{N1}') + pres('{P2}', '{N2}') + pres('{P3}', '{N3}') +
+    `</dgm:ptLst><dgm:cxnLst><dgm:cxn modelId="{C1}" srcId="{D0}" destId="{N1}" srcOrd="0" destOrd="0"/><dgm:cxn modelId="{C2}" srcId="{D0}" destId="{N2}" srcOrd="1" destOrd="0"/><dgm:cxn modelId="{C3}" srcId="{D0}" destId="{N3}" srcOrd="2" destOrd="0"/></dgm:cxnLst><dgm:bg/><dgm:whole/>` +
+    `<dgm:extLst><a:ext uri="http://schemas.microsoft.com/office/drawing/2008/diagram"><dsp:dataModelExt xmlns:dsp="${DSP}" relId="rIdDraw" minVer="http://schemas.openxmlformats.org/drawingml/2006/diagram"/></a:ext></dgm:extLst></dgm:dataModel>`
+  const shape = (id, x, t) => `<dsp:sp modelId="${id}"><dsp:nvSpPr><dsp:cNvPr id="0" name=""/><dsp:cNvSpPr/></dsp:nvSpPr><dsp:spPr><a:xfrm><a:off x="${x}" y="0"/><a:ext cx="1600000" cy="900000"/></a:xfrm><a:prstGeom prst="rect"><a:avLst/></a:prstGeom><a:solidFill><a:srgbClr val="4472C4"/></a:solidFill></dsp:spPr><dsp:txBody><a:bodyPr/><a:lstStyle/><a:p><a:r><a:rPr lang="en-US" sz="2000"/><a:t>${t}</a:t></a:r></a:p></dsp:txBody></dsp:sp>`
+  const drawingXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<dsp:drawing xmlns:dsp="${DSP}" xmlns:dgm="${DGM}" xmlns:a="${A}"><dsp:spTree><dsp:nvGrpSpPr><dsp:cNvPr id="0" name=""/><dsp:cNvGrpSpPr/></dsp:nvGrpSpPr><dsp:grpSpPr/>${shape('{P1}', 0, 'Plan')}${shape('{P2}', 1800000, 'Build')}${shape('{P3}', 3600000, 'Ship')}</dsp:spTree></dsp:drawing>`
+  zip.file('word/diagrams/data1.xml', dataXml)
+  zip.file('word/diagrams/drawing1.xml', drawingXml)
+  const minimal = (root, ns) => `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<dgm:${root} xmlns:dgm="${ns}" xmlns:a="${A}" uniqueId="urn:fixture"/>`
+  zip.file('word/diagrams/layout1.xml', minimal('layoutDef', DGM))
+  zip.file('word/diagrams/quickStyle1.xml', minimal('styleDef', DGM))
+  zip.file('word/diagrams/colors1.xml', minimal('colorsDef', DGM))
+  // custom XML and bibliography sources
+  zip.file('customXml/item1.xml', '<?xml version="1.0" encoding="UTF-8"?>\n<invoice xmlns="urn:example:invoice"><number>42</number><customer>Acme</customer></invoice>')
+  zip.file('customXml/item2.xml', `<?xml version="1.0" encoding="UTF-8"?>\n<b:Sources xmlns:b="http://schemas.openxmlformats.org/officeDocument/2006/bibliography" xmlns="http://schemas.openxmlformats.org/officeDocument/2006/bibliography" StyleName="APA"><b:Source><b:Tag>Knu97</b:Tag><b:SourceType>Book</b:SourceType><b:Author><b:Author><b:NameList><b:Person><b:Last>Knuth</b:Last><b:First>Donald</b:First></b:Person></b:NameList></b:Author></b:Author><b:Title>The Art of Computer Programming</b:Title><b:Year>1997</b:Year><b:Publisher>Addison-Wesley</b:Publisher></b:Source></b:Sources>`)
+  // relationships and content types
+  let rels = await zip.file('word/_rels/document.xml.rels').async('string')
+  rels = rels.replace('</Relationships>',
+    `<Relationship Id="rIdChart" Type="${R}/chart" Target="charts/chart1.xml"/>` +
+    `<Relationship Id="rIdDm" Type="${R}/diagramData" Target="diagrams/data1.xml"/><Relationship Id="rIdLo" Type="${R}/diagramLayout" Target="diagrams/layout1.xml"/>` +
+    `<Relationship Id="rIdQs" Type="${R}/diagramQuickStyle" Target="diagrams/quickStyle1.xml"/><Relationship Id="rIdCs" Type="${R}/diagramColors" Target="diagrams/colors1.xml"/>` +
+    `<Relationship Id="rIdDraw" Type="http://schemas.microsoft.com/office/2007/relationships/diagramDrawing" Target="diagrams/drawing1.xml"/>` +
+    `<Relationship Id="rIdCx1" Type="${R}/customXml" Target="../customXml/item1.xml"/><Relationship Id="rIdCx2" Type="${R}/customXml" Target="../customXml/item2.xml"/></Relationships>`)
+  zip.file('word/_rels/document.xml.rels', rels)
+  let ct = await zip.file('[Content_Types].xml').async('string')
+  ct = ct.replace('</Types>',
+    '<Default Extension="xlsx" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"/>' +
+    '<Override PartName="/word/charts/chart1.xml" ContentType="application/vnd.openxmlformats-officedocument.drawingml.chart+xml"/>' +
+    '<Override PartName="/word/diagrams/data1.xml" ContentType="application/vnd.openxmlformats-officedocument.drawingml.diagramData+xml"/>' +
+    '<Override PartName="/word/diagrams/layout1.xml" ContentType="application/vnd.openxmlformats-officedocument.drawingml.diagramLayout+xml"/>' +
+    '<Override PartName="/word/diagrams/quickStyle1.xml" ContentType="application/vnd.openxmlformats-officedocument.drawingml.diagramStyle+xml"/>' +
+    '<Override PartName="/word/diagrams/colors1.xml" ContentType="application/vnd.openxmlformats-officedocument.drawingml.diagramColors+xml"/>' +
+    '<Override PartName="/word/diagrams/drawing1.xml" ContentType="application/vnd.ms-office.drawingml.diagramDrawing+xml"/></Types>')
+  if (!/Extension="xml"/.test(ct)) ct = ct.replace('</Types>', '<Default Extension="xml" ContentType="application/xml"/></Types>')
+  zip.file('[Content_Types].xml', ct)
+  let xml = await zip.file('word/document.xml').async('string')
+  const inline = (cx, cy, id, gd) => `<w:r><w:drawing><wp:inline distT="0" distB="0" distL="0" distR="0"><wp:extent cx="${cx}" cy="${cy}"/><wp:effectExtent l="0" t="0" r="0" b="0"/><wp:docPr id="${id}" name="Object ${id}"/><wp:cNvGraphicFramePr/><a:graphic xmlns:a="${A}">${gd}</a:graphic></wp:inline></w:drawing></w:r>`
+  const chartRun = inline(4572000, 2743200, 501, `<a:graphicData uri="${C}"><c:chart xmlns:c="${C}" xmlns:r="${R}" r:id="rIdChart"/></a:graphicData>`)
+  const dgmRun = inline(5486400, 1600200, 502, `<a:graphicData uri="${DGM}"><dgm:relIds xmlns:dgm="${DGM}" xmlns:r="${R}" r:dm="rIdDm" r:lo="rIdLo" r:qs="rIdQs" r:cs="rIdCs"/></a:graphicData>`)
+  xml = xml.replace(/<w:r>(?:<w:rPr>.*?<\/w:rPr>)?<w:t[^>]*>CHART_HERE<\/w:t><\/w:r>/, chartRun).replace(/<w:r>(?:<w:rPr>.*?<\/w:rPr>)?<w:t[^>]*>DIAGRAM_HERE<\/w:t><\/w:r>/, dgmRun)
+  if (!xml.includes('xmlns:wp=')) xml = xml.replace('<w:document ', '<w:document xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing" ')
+  zip.file('word/document.xml', xml)
+  fs.writeFileSync(path.join(out, 'objects.docx'), await zip.generateAsync({ type: 'nodebuffer' }))
+  process.stdout.write('wrote objects.docx\n')
+}
