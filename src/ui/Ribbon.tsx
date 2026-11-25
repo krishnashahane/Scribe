@@ -194,6 +194,7 @@ export function Ribbon(props: {
               <IconButton label="Grow font" shortcut={`${mod}Shift+.`} icon={<AArrowUp size={17} />} disabled={dis} onClick={() => stepFont(1)} />
               <IconButton label="Shrink font" shortcut={`${mod}Shift+,`} icon={<AArrowDown size={17} />} disabled={dis} onClick={() => stepFont(-1)} />
               <Menu
+                align="left"
                 ariaLabel="Change case"
                 className="sc-case-menu"
                 label={<span title="Change case" className="sc-case-label">Aa</span>}
@@ -277,6 +278,7 @@ export function Ribbon(props: {
             </div>
             <div className="sc-group" aria-label="Illustrations">
               <Menu
+                align="left"
                 ariaLabel="Shapes"
                 className="sc-shapes-menu"
                 label={<span className="sc-menu-btn"><Shapes size={17} aria-hidden="true" /> Shapes</span>}
@@ -345,6 +347,7 @@ export function Ribbon(props: {
             <div className="sc-group">
               <IconButton showLabel label="Mail merge" icon={<Users size={17} />} onClick={() => onAction('mailMerge')} />
               <Menu
+                align="left"
                 ariaLabel="Insert merge field"
                 label={<span className="sc-menu-btn">«» Insert merge field</span>}
                 items={
