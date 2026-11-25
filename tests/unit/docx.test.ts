@@ -178,7 +178,7 @@ describe('DOCX round trip', () => {
   }
 
   it('is stable across five repeated import/export cycles', async () => {
-    let bytes = fx('complex.docx')
+    let bytes: Uint8Array = fx('complex.docx')
     const first = await importDocx(bytes)
     for (let i = 0; i < 5; i++) {
       const r = await importDocx(bytes)
