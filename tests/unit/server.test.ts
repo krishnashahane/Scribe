@@ -80,6 +80,31 @@ describe('auth', () => {
   })
 })
 
+describe('no-login guest sessions', () => {
+  it('creates a private guest identity that cannot be logged into, and upgrades it keeping documents', async () => {
+    const g = await api('/api/auth/guest', { method: 'POST' })
+    expect(g.status).toBe(201)
+    expect(g.json.user.guest).toBe(true)
+    const cookie = g.cookie!
+    // same browser asking again keeps its identity
+    expect((await api('/api/auth/guest', { method: 'POST', cookie })).json.user.id).toBe(g.json.user.id)
+    const d = await api('/api/docs', { method: 'POST', cookie, body: { title: 'Guest doc', content: doc } })
+    expect(d.status).toBe(201)
+    // guest emails can never be used to sign in or register
+    expect((await api('/api/auth/login', { method: 'POST', body: { email: g.json.user.email, password: '!guest' } })).status).toBe(401)
+    expect((await api('/api/auth/register', { method: 'POST', body: { email: 'x@guest.scribe.local', password: 'longenough1' } })).status).toBe(400)
+    // another guest cannot see it
+    const other = (await api('/api/auth/guest', { method: 'POST' })).cookie!
+    expect((await api(`/api/docs/${d.json.id}`, { cookie: other })).status).toBe(404)
+    // upgrade keeps the document and enables password login
+    const up = await api('/api/auth/upgrade', { method: 'POST', cookie, body: { email: 'upgraded@example.com', password: 'correct horse battery', name: 'Up' } })
+    expect(up.json.user).toMatchObject({ email: 'upgraded@example.com', guest: false })
+    const login = await api('/api/auth/login', { method: 'POST', body: { email: 'upgraded@example.com', password: 'correct horse battery' } })
+    expect((await api('/api/docs', { cookie: login.cookie })).json.docs.map((x: any) => x.title)).toContain('Guest doc')
+    expect((await api('/api/auth/upgrade', { method: 'POST', cookie, body: { email: 'again@example.com', password: 'correct horse battery' } })).status).toBe(400)
+  })
+})
+
 describe('documents and authorization', () => {
   it('enforces owner / editor / viewer / stranger permissions server-side', async () => {
     const owner = await user('owner@example.com')
