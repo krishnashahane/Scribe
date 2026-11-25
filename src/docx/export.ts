@@ -2,6 +2,11 @@ import JSZip from 'jszip'
 import type { CompatibilityIssue, DocMeta, PMNode, ScribeDocument, SectionProps } from '../model/types'
 import { defaultPage, pxToEmu, pxToTwip, twipToPx } from '../model/types'
 import { parseNumbering } from './styles'
+import { applyChart, type ChartData } from '../objects/chart'
+import { applySmartArtData, applySmartArtDrawing, type SmartArtData } from '../objects/smartart'
+import { shapeRunXml, WPS_NS, type ShapeAttrs } from '../objects/shapes'
+import { BIB_NS, sourcesXml } from '../features/citations'
+import { applyStyleEdits } from '../features/styles'
 import { HIGHLIGHT_NAMES } from './import'
 import { resolvePath } from './package'
 import {
@@ -44,7 +49,7 @@ const CT = {
 const IMG_EXT: Record<string, string> = { 'image/png': 'png', 'image/jpeg': 'jpeg', 'image/gif': 'gif', 'image/bmp': 'bmp', 'image/webp': 'webp', 'image/tiff': 'tiff' }
 
 const ROOT_NS: Record<string, string> = {
-  w: NS.w, r: NS.r, wp: NS.wp, a: NS.a, pic: NS.pic, mc: NS.mc,
+  w: NS.w, r: NS.r, wp: NS.wp, a: NS.a, pic: NS.pic, mc: NS.mc, m: NS.m, wps: WPS_NS,
 }
 const ROOT_NS_ATTRS = Object.entries(ROOT_NS).map(([p, u]) => `xmlns:${p}="${u}"`).join(' ')
 
@@ -224,6 +229,32 @@ interface Ctx {
   styleIsHeading: (id: string) => boolean
   usedStyles: Set<string>
   textWidthTwips: number
+  /** chart / diagram parts already rewritten in this export */
+  editedParts: Set<string>
+}
+
+/** Rewrite the data parts behind an edited chart or diagram. */
+async function writeObjectEdits(obj: any, ctx: Ctx) {
+  if (obj?.kind === 'chart' && obj.chart?.dirty) {
+    const chart = obj.chart as ChartData
+    if (ctx.editedParts.has(chart.part)) return
+    const f = ctx.zip.file(chart.part)
+    if (!f) return ctx.report.add('dropped', 'Chart edits', 'A chart’s data part was missing from the original file, so its edits could not be saved.')
+    ctx.zip.file(chart.part, applyChart(await f.async('string'), chart))
+    ctx.editedParts.add(chart.part)
+    ctx.report.add('transformed', 'Edited charts', 'Edited chart data is stored inside the chart itself; the spreadsheet copy embedded in the original file is no longer linked.', 'info')
+  }
+  if (obj?.kind === 'smartart' && obj.smartArt?.dirty) {
+    const sa = obj.smartArt as SmartArtData
+    if (ctx.editedParts.has(sa.dataPart)) return
+    const data = ctx.zip.file(sa.dataPart)
+    if (!data) return ctx.report.add('dropped', 'SmartArt edits', 'A diagram’s data part was missing from the original file, so its edits could not be saved.')
+    const dataXml = await data.async('string')
+    const drawing = sa.drawingPart ? ctx.zip.file(sa.drawingPart) : null
+    if (drawing) ctx.zip.file(sa.drawingPart!, applySmartArtDrawing(await drawing.async('string'), dataXml, sa.items))
+    ctx.zip.file(sa.dataPart, applySmartArtData(dataXml, sa.items))
+    ctx.editedParts.add(sa.dataPart)
+  }
 }
 
 type Mark = { type: string; attrs?: Record<string, any> }
@@ -431,7 +462,7 @@ async function imageRun(node: PMNode, ctx: Ctx, rPr: string): Promise<string> {
     ctx.report.add('dropped', 'Images that could not be embedded', 'Remote or unsupported images could not be embedded and were left out of the DOCX.')
     return ''
   }
-  if (ext === 'webp') ctx.report.add('transformed', 'WebP images', 'WebP images are embedded as-is; Word versions before 2019 may not display them.', 'info')
+  if (ext === 'webp') ctx.report.add('transformed', 'WebP images', 'WebP images are embedded as-is; older desktop editors may not display them.', 'info')
   const hash = hashBytes(data.bytes)
   let target = ctx.media.get(hash)
   if (!target) {
@@ -575,7 +606,11 @@ async function inlinesXml(nodes: PMNode[] | undefined, ctx: Ctx, prefix = ''): P
         break
       }
       case 'opaqueInline':
+        await writeObjectEdits(n.attrs?.object, ctx)
         group.xml += String(n.attrs?.xml || '')
+        break
+      case 'shape':
+        group.xml += shapeRunXml(n.attrs as ShapeAttrs, ctx.ids.docPr++, rPr)
         break
       default:
         ctx.report.add('dropped', `Inline ${n.type}`, 'This inline element has no DOCX equivalent and was skipped.')
@@ -721,6 +756,15 @@ async function blocksXml(blocks: PMNode[] | undefined, ctx: Ctx, opts: { topLeve
       case 'opaqueBlock':
         out += String(b.attrs?.xml || '')
         break
+      case 'bibliography': {
+        const entries = (Array.isArray(b.attrs?.entries) ? b.attrs!.entries : []) as { text: string; italic?: boolean }[][]
+        let inner = await paragraphXml({ type: 'heading', attrs: { level: 1 }, content: [{ type: 'text', text: String(b.attrs?.title || 'References') }] }, ctx)
+        for (const e of entries)
+          inner += await paragraphXml({ type: 'paragraph', attrs: { indentLeft: 720, indentFirstLine: -720 }, content: e.filter((g) => g.text).map((g) => ({ type: 'text', text: String(g.text), ...(g.italic ? { marks: [{ type: 'italic' }] } : {}) })) }, ctx)
+        if (!entries.length) inner += '<w:p/>'
+        out += `<w:sdt><w:sdtPr><w:id w:val="${ctx.ids.bookmark++}"/><w:docPartObj><w:docPartGallery w:val="Bibliographies"/><w:docPartUnique/></w:docPartObj></w:sdtPr><w:sdtContent>${inner}</w:sdtContent></w:sdt>`
+        break
+      }
       default:
         ctx.report.add('dropped', `Block ${b.type}`, 'This block has no DOCX equivalent and was skipped.')
     }
@@ -985,6 +1029,7 @@ export async function exportDocx(doc: ScribeDocument, original?: Uint8Array | nu
     styleIsHeading: (id) => [...headingMap.values()].includes(id) || /^Heading[1-6]$/.test(id) || headingLevelOf(ctx, id) != null,
     usedStyles: new Set(),
     textWidthTwips: firstPage.width - firstPage.marginLeft - firstPage.marginRight,
+    editedParts: new Set(),
   }
 
   // ---- header / footer parts
@@ -1058,7 +1103,7 @@ export async function exportDocx(doc: ScribeDocument, original?: Uint8Array | nu
         const p = resolvePath(dir, r.target)
         zip.remove(p)
         ct.remove(p)
-        report.add('transformed', 'Comment threads', 'Comments were edited, so Word-specific reply/resolve metadata was rebuilt without threading.', 'info')
+        report.add('transformed', 'Comment threads', 'Comments were edited, so reply and resolved-state metadata was rebuilt without threading.', 'info')
       }
     }
   }
@@ -1083,6 +1128,25 @@ export async function exportDocx(doc: ScribeDocument, original?: Uint8Array | nu
     zip.file(resolvePath(dir, numTarget!), numXml.startsWith('<?xml') ? numXml : `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n${numXml}`)
   }
 
+  // ---- edited / new styles
+  const styleEdits = applyStyleEdits(styleDoc, meta.styles, (id) => stylesXml(meta.defaults).match(new RegExp(`<w:style w:type="paragraph"(?: w:default="1")? w:styleId="${id}">.*?</w:style>`))?.[0] ?? null)
+  for (const s of meta.styles) if (s.modified || s.custom) styleIds.add(s.id)
+
+  // ---- bibliography sources part
+  if (meta.sources?.length) await writeSources(zip, ct, rels, dir, meta)
+
+  // ---- edited custom XML parts
+  for (const part of meta.customXml ?? []) {
+    if (!part.edited || !/^customXml\/item\d+\.xml$/i.test(part.path) || !zip.file(part.path)) continue
+    try {
+      parseXml(part.xml, part.path)
+    } catch {
+      report.add('dropped', 'Custom XML edits', `${part.path} was not well-formed XML, so the original part was kept.`)
+      continue
+    }
+    zip.file(part.path, part.xml.startsWith('<?xml') ? part.xml : `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n${part.xml}`)
+  }
+
   // ---- styles referenced but missing
   const missing: string[] = []
   for (const id of ctx.usedStyles) {
@@ -1093,7 +1157,7 @@ export async function exportDocx(doc: ScribeDocument, original?: Uint8Array | nu
     else if (id === 'TableGrid') missing.push(TABLE_GRID_STYLE)
     else if (id === 'Hyperlink') missing.push(HYPERLINK_STYLE)
   }
-  if (missing.length || !original) {
+  if (missing.length || !original || styleEdits) {
     const s = serializeXml(styleDoc).replace(/<\/w:styles>\s*$/, missing.join('') + '</w:styles>')
     zip.file(resolvePath(dir, stylesTarget!), s.startsWith('<?xml') ? s : `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n${s}`)
   }
@@ -1134,6 +1198,37 @@ export async function exportDocx(doc: ScribeDocument, original?: Uint8Array | nu
   zip.file('[Content_Types].xml', ct.xml())
   const data = await zip.generateAsync({ type: 'uint8array', compression: 'DEFLATE', compressionOptions: { level: 6 }, mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' })
   return { data, report: report.list() }
+}
+
+const REL_CUSTOM_XML = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/customXml'
+const REL_CUSTOM_PROPS = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/customXmlProps'
+const CT_CUSTOM_PROPS = 'application/vnd.openxmlformats-officedocument.customXmlProperties+xml'
+
+/** Write meta.sources into the package's bibliography part (creating it when needed). */
+async function writeSources(zip: JSZip, ct: ContentTypes, rels: Rels, dir: string, meta: DocMeta) {
+  const xml = sourcesXml(meta.sources!, meta.citationStyle ?? 'APA')
+  for (const name of Object.keys(zip.files)) {
+    if (!/^customXml\/item\d+\.xml$/i.test(name)) continue
+    const cur = await zip.file(name)!.async('string')
+    if (cur.includes(BIB_NS) && /<(?:\w+:)?Sources\b/.test(cur)) {
+      zip.file(name, xml)
+      return
+    }
+  }
+  let n = 1
+  while (zip.file(`customXml/item${n}.xml`) || zip.file(`customXml/itemProps${n}.xml`)) n++
+  zip.file(`customXml/item${n}.xml`, xml)
+  const id = `{${crypto.randomUUID().toUpperCase()}}`
+  zip.file(
+    `customXml/itemProps${n}.xml`,
+    `<?xml version="1.0" encoding="UTF-8" standalone="no"?>\n<ds:datastoreItem ds:itemID="${id}" xmlns:ds="http://schemas.openxmlformats.org/officeDocument/2006/customXml"><ds:schemaRefs><ds:schemaRef ds:uri="${BIB_NS}"/></ds:schemaRefs></ds:datastoreItem>`,
+  )
+  const itemRels = new Rels(`customXml/_rels/item${n}.xml.rels`, null)
+  itemRels.add(REL_CUSTOM_PROPS, `itemProps${n}.xml`)
+  zip.file(`customXml/_rels/item${n}.xml.rels`, itemRels.xml())
+  ct.override(`customXml/itemProps${n}.xml`, CT_CUSTOM_PROPS)
+  ct.ensureDefault('xml', 'application/xml')
+  rels.add(REL_CUSTOM_XML, `${'../'.repeat(dir.split('/').filter(Boolean).length)}customXml/item${n}.xml`)
 }
 
 function initials(name: string) {
