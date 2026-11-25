@@ -7,7 +7,7 @@ export default defineConfig({
   reporter: 'list',
   use: { baseURL: 'http://127.0.0.1:8799', acceptDownloads: true, viewport: { width: 1400, height: 950 } },
   webServer: {
-    command: 'rm -f tests/output/e2e.db* && NODE_ENV=production PORT=8799 SCRIBE_DB=tests/output/e2e.db node server/index.js',
+    command: 'rm -rf tests/output/e2e-db && NODE_ENV=production PORT=8799 SCRIBE_DB_DIR=tests/output/e2e-db node server/index.js',
     url: 'http://127.0.0.1:8799/api/health',
     reuseExistingServer: false,
     timeout: 30_000,
