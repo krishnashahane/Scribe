@@ -147,6 +147,9 @@ async function convertBlocks(container: Element, ctx: Ctx): Promise<PMNode[]> {
           out.push(await convertTable(c, ctx))
           continue
         case 'sectPr':
+        case 'tcPr':
+        case 'trPr':
+        case 'tblPr':
           continue // handled by caller
         case 'sdt': {
           const gallery = wVal(descendants(c, NS.w, 'docPartGallery')[0])
@@ -543,15 +546,17 @@ function closeOpenFields(ctx: Ctx, _blocks: PMNode[]) {
   }
 }
 
-function opaqueRunLevel(e: Element, ctx: Ctx): PMNode {
+/** inRunRPr: when the element came from inside a <w:r>, it is re-wrapped in a run so export stays schema-valid. */
+function opaqueRunLevel(e: Element, ctx: Ctx, inRunRPr?: string): PMNode {
   const choice = child(e, NS.mc, 'Choice') ?? e
-  const xml = serializeXml(e)
+  const xml = inRunRPr === undefined ? serializeXml(e) : runXml(inRunRPr, serializeXml(e))
   let label = 'Object'
   if (/txbx|textbox/i.test(xml)) label = 'Text box'
   else if (/chart/i.test(xml)) label = 'Chart'
   else if (/wps:wsp|v:shape|v:rect/i.test(xml)) label = 'Shape'
   else if (/dgm|diagram/i.test(xml)) label = 'SmartArt'
-  ctx.report.add('preserved', label === 'Object' ? 'Drawing objects' : label + 's', `${label}s are preserved verbatim and positioned by Word; SCRIBE shows them as placeholders${label === 'Text box' ? ' with their text' : ''}.`)
+  const plural: Record<string, string> = { Object: 'Drawing objects', 'Text box': 'Text boxes', Chart: 'Charts', Shape: 'Shapes', SmartArt: 'SmartArt' }
+  ctx.report.add('preserved', plural[label], `${plural[label]} are preserved verbatim and positioned by Word; SCRIBE shows them as placeholders${label === 'Text box' ? ' with their text' : ''}.`)
   return { type: 'opaqueInline', attrs: { xml, label, preview: textContent(choice).slice(0, 200) } }
 }
 
@@ -569,7 +574,7 @@ async function convertRun(r: Element, ctx: Ctx, inherited: Mark[], _out: Inline[
       continue
     }
     if (c.namespaceURI === NS.mc) {
-      push(opaqueRunLevel(c, ctx))
+      push(opaqueRunLevel(c, ctx, rPrXml))
       continue
     }
     if (c.namespaceURI !== NS.w) {
@@ -618,7 +623,7 @@ async function convertRun(r: Element, ctx: Ctx, inherited: Mark[], _out: Inline[
             break
           }
         }
-        push(opaqueRunLevel(c, ctx))
+        push(opaqueRunLevel(c, ctx, rPrXml))
         break
       }
       case 'fldChar': {
@@ -749,7 +754,7 @@ async function convertDrawing(d: Element, ctx: Ctx, rPrXml: string): Promise<PMN
     }
     ctx.report.add('preserved', 'Unsupported image formats', 'Images in formats browsers cannot show (EMF/WMF/TIFF) are preserved and shown as placeholders.', 'warning')
   }
-  if (holder && !isPicture) return opaqueRunLevel(d, ctx)
+  if (holder && !isPicture) return opaqueRunLevel(d, ctx, rPrXml)
   return { type: 'opaqueInline', attrs: { xml: runXml(rPrXml, serializeXml(d)), label: 'Image', preview: '[image]' } }
 }
 
@@ -814,6 +819,8 @@ async function convertTable(tbl: Element, ctx: Ctx): Promise<PMNode> {
   const tblPr = wChild(tbl, 'tblPr')
   const grid = wChildren(wChild(tbl, 'tblGrid'), 'gridCol').map((g) => intAttr(g, 'w') ?? 0)
   const tableAttrs: Record<string, any> = {}
+  const gridEl = wChild(tbl, 'tblGrid')
+  if (gridEl) tableAttrs.gridXml = serializeXml(gridEl)
   const style = wVal(wChild(tblPr, 'tblStyle'))
   if (style) tableAttrs.tblStyle = style
   const tblExtra = children(tblPr).filter((c) => !(c.namespaceURI === NS.w && c.localName === 'tblStyle')).map(serializeXml)
