@@ -2,7 +2,12 @@ import type { CommentThread, CompatibilityIssue, DocMeta, Footnote, PMNode, Scri
 import { SCHEMA_VERSION, defaultPage, emptyMeta, emuToPx } from '../model/types'
 import { OoxmlPackage, type Relationship } from './package'
 import { NUMFMT_CSS, type Numbering, type StyleSheet, fontFromRFonts, parseNumbering, parseStyles, parseTheme, resolvedStyles, type ThemeFonts } from './styles'
-import { NS, attr, child, children, descendants, intAttr, onOff, serializeXml, textContent, wChild, wChildren, wVal } from './xml'
+import { NS, attr, child, children, descendants, intAttr, onOff, parseXml, serializeXml, textContent, wChild, wChildren, wVal } from './xml'
+import { C_NS, parseChart } from '../objects/chart'
+import { DGM_NS, drawingRelId, parseSmartArt } from '../objects/smartart'
+import { parseInlineShape } from '../objects/shapes'
+import { parseSourcesXml } from '../features/citations'
+import type { ObjectInfo } from '../model/extensions'
 
 export interface ImportResult {
   doc: ScribeDocument
@@ -25,7 +30,8 @@ const IMAGE_MIME: Record<string, string> = {
   png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif', bmp: 'image/bmp', webp: 'image/webp', tif: 'image/tiff', tiff: 'image/tiff',
 }
 
-const SIMPLE_FIELDS = /^\s*(PAGE|NUMPAGES|SECTIONPAGES)\b/i
+const SIMPLE_FIELDS = /^\s*(PAGE|NUMPAGES|SECTIONPAGES|MERGEFIELD|CITATION)\b/i
+const MAX_CUSTOM_XML = 256 * 1024
 
 class Report {
   private map = new Map<string, CompatibilityIssue>()
@@ -68,6 +74,8 @@ interface Ctx {
   headerFooters: Record<string, PMNode>
   /** while converting header/footer parts, section breaks aren't meaningful */
   inHeaderFooter: boolean
+  /** charts and diagrams whose data parts are read after conversion */
+  pending: { node: PMNode; rels: Relationship[] }[]
 }
 
 export async function importDocx(data: ArrayBuffer | Uint8Array): Promise<ImportResult> {
@@ -86,7 +94,7 @@ export async function importDocx(data: ArrayBuffer | Uint8Array): Promise<Import
   const ctx: Ctx = {
     pkg, part: main, rels, sheet, theme, numbering, report,
     media: new Map(), activeComments: new Set(), fields: [], noteLabels: new Map(),
-    noteCounter: { footnote: 0, endnote: 0 }, sections: [], headerFooters: {}, inHeaderFooter: false,
+    noteCounter: { footnote: 0, endnote: 0 }, sections: [], headerFooters: {}, inHeaderFooter: false, pending: [],
   }
 
   const meta: DocMeta = emptyMeta()
@@ -112,14 +120,29 @@ export async function importDocx(data: ArrayBuffer | Uint8Array): Promise<Import
   meta.sections = ctx.sections
   meta.headerFooters = ctx.headerFooters
   meta.metadata = await importCoreProps(pkg)
+  await resolveObjects(ctx)
 
-  // package-level features we preserve but cannot edit
+  // package-level features
+  let customBytes = 0
   for (const p of pkg.listParts()) {
     if (/vbaProject\.bin$/i.test(p)) report.add('preserved', 'Macros (VBA)', 'Macro project kept byte-for-byte; SCRIBE never runs macros.', 'warning')
-    if (/\/charts\/chart\d*\.xml$/.test(p)) report.add('preserved', 'Charts', 'Chart parts are preserved and re-exported unchanged; they display as placeholders.')
     if (/\/embeddings\//.test(p)) report.add('preserved', 'Embedded objects (OLE)', 'Embedded files are preserved unchanged.')
-    if (/customXml\//.test(p)) report.add('preserved', 'Custom XML parts', 'Kept unchanged.')
     if (/glossary\/document\.xml$/.test(p)) report.add('preserved', 'Building blocks / glossary', 'Kept unchanged.')
+    if (/^customXml\/item\d+\.xml$/i.test(p)) {
+      const doc = await pkg.xml(p).catch(() => null)
+      if (!doc) continue
+      const xml = serializeXml(doc.documentElement)
+      const bib = parseSourcesXml(xml)
+      if (bib) {
+        meta.sources = bib.sources
+        if (bib.style) meta.citationStyle = bib.style
+        if (bib.sources.length) report.add('transformed', 'Bibliography sources', `${bib.sources.length} source(s) imported; edit them from References → Sources.`, 'info')
+      } else if (xml.length <= MAX_CUSTOM_XML && customBytes + xml.length <= 4 * MAX_CUSTOM_XML) {
+        customBytes += xml.length
+        ;(meta.customXml ??= []).push({ path: p, xml })
+        report.add('preserved', 'Custom XML parts', 'Kept unchanged; edit them from File → Custom XML data.')
+      } else report.add('preserved', 'Custom XML parts', 'Large custom XML parts are kept unchanged but are too big to edit in SCRIBE.')
+    }
   }
   if (meta.footnotes.length) report.add('preserved', 'Footnotes', `${meta.footnotes.length} footnote(s) shown read-only; their text is preserved verbatim.`)
   if (meta.endnotes.length) report.add('preserved', 'Endnotes', `${meta.endnotes.length} endnote(s) shown read-only; their text is preserved verbatim.`)
@@ -154,8 +177,15 @@ async function convertBlocks(container: Element, ctx: Ctx): Promise<PMNode[]> {
         case 'sdt': {
           const gallery = wVal(descendants(c, NS.w, 'docPartGallery')[0])
           if (gallery && /table of contents/i.test(gallery)) {
-            ctx.report.add('preserved', 'Table of contents', 'TOC preserved as a read-only block; update it in Word to refresh page numbers.')
+            ctx.report.add('preserved', 'Table of contents', 'The table of contents is kept as a read-only block; its page numbers refresh when the file is updated in a desktop editor.')
             out.push(opaqueBlock(c, 'Table of contents', ctx))
+          } else if (gallery && /bibliograph/i.test(gallery)) {
+            const paras = descendants(c, NS.w, 'p').map((p) => textContent(p).trim()).filter(Boolean)
+            const headed = descendants(c, NS.w, 'pStyle').some((st) => /heading/i.test(wVal(st) ?? ''))
+            const title = headed && paras.length ? paras[0] : 'References'
+            const entries = (headed ? paras.slice(1) : paras).map((t) => [{ text: t }])
+            ctx.report.add('transformed', 'Bibliography', 'The bibliography is regenerated from the document’s sources when they change.')
+            out.push({ type: 'bibliography', attrs: { title, entries } })
           } else {
             ctx.report.add('transformed', 'Content controls', 'Block content controls were unwrapped; their text is editable but control properties (locking, data binding) are not kept.')
             const content = wChild(c, 'sdtContent')
@@ -442,8 +472,8 @@ async function convertInlines(container: Element, ctx: Ctx, inherited: Mark[]): 
   }
   for (const c of children(container)) {
     if (c.namespaceURI === NS.m) {
-      ctx.report.add('preserved', 'Equations', 'Equations are preserved verbatim and shown as read-only text.')
-      push({ type: 'opaqueInline', attrs: { xml: serializeXml(c), label: 'Equation', preview: descendants(c, NS.m, 't').map((t) => t.textContent).join('') || '[equation]' } })
+      ctx.report.add('preserved', 'Equations', 'Equations are kept exactly; double-click one to edit it.')
+      push({ type: 'opaqueInline', attrs: { xml: serializeXml(c), label: 'Equation', preview: descendants(c, NS.m, 't').map((t) => t.textContent).join('') || '[equation]', object: { kind: 'equation' } } })
       continue
     }
     if (c.namespaceURI === NS.mc && c.localName === 'AlternateContent') {
@@ -551,13 +581,23 @@ function opaqueRunLevel(e: Element, ctx: Ctx, inRunRPr?: string): PMNode {
   const choice = child(e, NS.mc, 'Choice') ?? e
   const xml = inRunRPr === undefined ? serializeXml(e) : runXml(inRunRPr, serializeXml(e))
   let label = 'Object'
-  if (/txbx|textbox/i.test(xml)) label = 'Text box'
-  else if (/chart/i.test(xml)) label = 'Chart'
+  let object: ObjectInfo | null = null
+  const hasTextBox = descendants(e, NS.w, 'txbxContent').length > 0
+  const chartRef = descendants(e, C_NS, 'chart')[0]
+  const diagram = descendants(e, DGM_NS, 'relIds')[0]
+  if (hasTextBox) {
+    label = 'Text box'
+    object = { kind: 'textbox' }
+  } else if (chartRef) label = 'Chart'
+  else if (diagram) label = 'SmartArt'
   else if (/wps:wsp|v:shape|v:rect/i.test(xml)) label = 'Shape'
-  else if (/dgm|diagram/i.test(xml)) label = 'SmartArt'
+  else if (/chart/i.test(xml)) label = 'Chart'
   const plural: Record<string, string> = { Object: 'Drawing objects', 'Text box': 'Text boxes', Chart: 'Charts', Shape: 'Shapes', SmartArt: 'SmartArt' }
-  ctx.report.add('preserved', plural[label], `${plural[label]} are preserved verbatim and positioned by Word; SCRIBE shows them as placeholders${label === 'Text box' ? ' with their text' : ''}.`)
-  return { type: 'opaqueInline', attrs: { xml, label, preview: textContent(choice).slice(0, 200) } }
+  const editable: Record<string, string> = { 'Text box': 'double-click one to edit its text', Chart: 'double-click one to edit its data', SmartArt: 'double-click one to edit its text' }
+  ctx.report.add('preserved', plural[label], `${plural[label]} keep their original position and appearance in the exported file${editable[label] ? `; ${editable[label]}` : '; SCRIBE shows them as placeholders'}.`)
+  const node: PMNode = { type: 'opaqueInline', attrs: { xml, label, preview: textContent(choice).slice(0, 200), object } }
+  if (chartRef || diagram) ctx.pending.push({ node, rels: ctx.rels })
+  return node
 }
 
 async function convertRun(r: Element, ctx: Ctx, inherited: Mark[], _out: Inline[], push: (i: Inline | Inline[]) => void) {
@@ -676,7 +716,7 @@ async function convertRun(r: Element, ctx: Ctx, inherited: Mark[], _out: Inline[
       case 'sym': {
         const ch = attr(c, 'char')
         const code = ch ? parseInt(ch, 16) : NaN
-        // Symbol fonts map into the private-use area; keep the original element so Word renders the right glyph
+        // Symbol fonts map into the private-use area; keep the original element so the right glyph is rendered
         push({ type: 'opaqueInline', attrs: { xml: runXml(rPrXml, serializeXml(c)), label: 'Symbol', preview: Number.isFinite(code) && code < 0xf000 ? String.fromCodePoint(code) : '' } })
         break
       }
@@ -753,6 +793,10 @@ async function convertDrawing(d: Element, ctx: Ctx, rPrXml: string): Promise<PMN
       return { type: 'image', attrs }
     }
     ctx.report.add('preserved', 'Unsupported image formats', 'Images in formats browsers cannot show (EMF/WMF/TIFF) are preserved and shown as placeholders.', 'warning')
+  }
+  if (holder && !isPicture && holder.localName === 'inline') {
+    const shape = parseInlineShape(holder)
+    if (shape) return { type: 'shape', attrs: { ...shape } }
   }
   if (holder && !isPicture) return opaqueRunLevel(d, ctx, rPrXml)
   return { type: 'opaqueInline', attrs: { xml: runXml(rPrXml, serializeXml(d)), label: 'Image', preview: '[image]' } }
@@ -930,6 +974,45 @@ async function parseSection(sectPr: Element | null, ctx: Ctx): Promise<SectionPr
     ;(sec as any)[key] = rel.target
   }
   return sec
+}
+
+/** Read the data parts behind charts and diagrams so they can be previewed and edited. */
+async function resolveObjects(ctx: Ctx) {
+  const text = async (path: string) => {
+    const d = await ctx.pkg.xml(path).catch(() => null)
+    return d ? serializeXml(d.documentElement) : null
+  }
+  for (const { node, rels } of ctx.pending) {
+    try {
+      const el = parseXml(String(node.attrs!.xml), 'object').documentElement
+      const ext = descendants(el, NS.wp, 'extent')[0]
+      const width = Math.round(emuToPx(Number(ext?.getAttribute('cx') || 0))) || 480
+      const height = Math.round(emuToPx(Number(ext?.getAttribute('cy') || 0))) || 280
+      const chartRef = descendants(el, C_NS, 'chart')[0]
+      if (chartRef) {
+        const rel = rels.find((r) => r.id === chartRef.getAttributeNS(NS.r, 'id') && !r.external)
+        const xml = rel && (await text(rel.target))
+        if (!xml) continue
+        const chart = parseChart(xml, rel.target)
+        node.attrs!.object = { kind: 'chart', chart, width, height }
+        node.attrs!.preview = chart.title || 'Chart'
+        continue
+      }
+      const ids = descendants(el, DGM_NS, 'relIds')[0]
+      if (ids) {
+        const rel = rels.find((r) => r.id === ids.getAttributeNS(NS.r, 'dm') && !r.external)
+        const xml = rel && (await text(rel.target))
+        if (!xml) continue
+        const drawId = drawingRelId(xml)
+        const drawRel = drawId ? rels.find((r) => r.id === drawId && !r.external) : undefined
+        const smartArt = parseSmartArt(xml, rel.target, drawRel?.target)
+        node.attrs!.object = { kind: 'smartart', smartArt }
+        node.attrs!.preview = smartArt.items.map((i) => i.text).filter(Boolean).join(' · ').slice(0, 200) || 'SmartArt'
+      }
+    } catch {
+      ctx.report.add('preserved', 'Unreadable chart or diagram data', 'The object is kept exactly but its data could not be read for editing.', 'warning')
+    }
+  }
 }
 
 async function importHeaderFooter(path: string, ctx: Ctx): Promise<PMNode> {
