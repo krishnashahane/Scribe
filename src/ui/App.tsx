@@ -50,7 +50,7 @@ export function App() {
       })
   }, [])
 
-  // Like Word: open straight into the last document, or a fresh blank one.
+  // Open straight into the last document, or a fresh blank one.
   useEffect(() => {
     if (!user || route.name !== 'start') return
     const last = localStorage.getItem('scribe-last-doc')
