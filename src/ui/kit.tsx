@@ -1,4 +1,4 @@
-import { createContext, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from 'react'
+import { createContext, useCallback, useContext, useEffect, useEffectEvent, useRef, useState, type ReactNode } from 'react'
 import { X } from 'lucide-react'
 
 export function IconButton(props: {
@@ -31,6 +31,7 @@ export function IconButton(props: {
 
 export function Dialog(props: { title: string; onClose: () => void; children: ReactNode; footer?: ReactNode; wide?: boolean }) {
   const ref = useRef<HTMLDivElement>(null)
+  const close = useEffectEvent(() => props.onClose())
   useEffect(() => {
     const prev = document.activeElement as HTMLElement | null
     const el = ref.current
@@ -39,7 +40,7 @@ export function Dialog(props: { title: string; onClose: () => void; children: Re
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
         e.stopPropagation()
-        props.onClose()
+        close()
       }
       if (e.key === 'Tab' && el) {
         const f = [...el.querySelectorAll<HTMLElement>('button, input, select, textarea, [tabindex]:not([tabindex="-1"])')].filter((x) => !x.hasAttribute('disabled'))
@@ -58,7 +59,6 @@ export function Dialog(props: { title: string; onClose: () => void; children: Re
       document.removeEventListener('keydown', onKey, true)
       prev?.focus?.()
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
   return (
     <div className="sc-overlay" onMouseDown={(e) => e.target === e.currentTarget && props.onClose()}>
