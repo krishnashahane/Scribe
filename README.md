@@ -7,40 +7,61 @@ with everything it doesn't understand preserved byte-for-byte.
 
 ## Quick start
 
-Requirements: Node.js 22.13+ (uses the built-in `node:sqlite`), npm.
+Live: https://scribe-pi-indol.vercel.app
+
+Requirements: Node.js 22+, npm.
 
 ```bash
 npm install
-npm run dev          # web on http://localhost:5173, API on :8787
+npm run dev          # web on http://localhost:5173, API on :8787 (embedded PGlite database in ./data)
 ```
 
-Production:
+Production build served locally:
 
 ```bash
 npm run build
-npm start            # serves the app and API on http://127.0.0.1:8787
+npm start            # http://127.0.0.1:8787
 ```
 
 Open the address and start typing. Each browser gets a private local identity automatically and SCRIBE
 reopens your last document. Accounts are optional (File → Save to an account): use one to share documents,
 open them on other devices, or keep them if browser data is cleared. Upgrading keeps every document.
 
+### Configuration
+
+Copy `.env.example` to `.env.local`. Every variable is server-side only (none use a `VITE_` prefix), and on
+Vercel they're set in the project settings, never in code.
+
 | Variable | Purpose |
 |---|---|
-| `PORT`, `HOST` | Server address (default `127.0.0.1:8787`) |
-| `SCRIBE_DB` | SQLite file (default `data/scribe.db`) |
+| `DATABASE_URL` | PostgreSQL (Neon on Vercel). Unset locally → embedded PGlite in `./data/pglite` |
 | `ANTHROPIC_API_KEY` | Enables AI assistance with Claude (default model `claude-opus-5-5`) |
-| `SCRIBE_AI_PROVIDER` | `anthropic` \| `openai-compatible` \| `none` |
-| `SCRIBE_AI_MODEL` | Override the model id |
-| `SCRIBE_AI_BASE_URL`, `SCRIBE_AI_API_KEY` | For OpenAI-compatible servers (Ollama, LM Studio, vLLM…) |
+| `SCRIBE_AI_PROVIDER`, `SCRIBE_AI_MODEL`, `SCRIBE_AI_BASE_URL`, `SCRIBE_AI_API_KEY` | Alternative / OpenAI-compatible AI providers |
+| `ALLOWED_ORIGINS` | Extra origins allowed to call the API (default: same origin only) |
+| `PORT`, `HOST`, `SCRIBE_DB_DIR` | Local server only |
 
-API keys stay on the server; the browser never sees them. Without a key the AI panel says so. It never fakes output.
+### Deploying to Vercel
+
+The client is a static Vite build; the API is one Vercel Function (`api/index.js`, Express) backed by Postgres.
+`vercel.json` sets the build, the `/api/*` rewrite, and security headers for every response.
+
+```bash
+vercel link --project scribe
+vercel integration add neon      # provisions Postgres and sets DATABASE_URL in the project
+vercel env add ANTHROPIC_API_KEY production   # optional
+vercel --prod
+```
+
+The database schema is created and migrated automatically on first request.
 
 ## Tests
 
 ```bash
-npm test                  # 32 unit/integration tests: DOCX import/export, security, server, collaboration
+npm run lint              # ESLint (typescript-eslint, react-hooks, no-console)
+npm run typecheck         # TypeScript
+npm test                  # 35 unit/integration tests: DOCX import/export, security, server, collaboration
 npm run test:e2e          # 6 browser tests (Playwright + Chromium) against the production build
+LIVE_URL=https://… npx playwright test -c playwright.live.config.ts   # same suite against a deployment
 npm run fixtures          # regenerate the DOCX corpus in tests/fixtures
 npm run verify:python-docx  # open every exported file with python-docx (pip install python-docx)
 ```
@@ -55,7 +76,8 @@ src/editor       find/replace, track-changes (suggesting) mode, section bookkeep
 src/formats      HTML (sanitised) and TXT import/export
 src/collab       Yjs session: IndexedDB local copy + WebSocket sync
 src/ui           React interface (ribbon, page canvas, panels, dialogs)
-server/          Express API, SQLite storage, auth + RBAC, Yjs collaboration server, AI service
+server/          Express API: Postgres storage, auth + RBAC, zod validation, HTTP Yjs sync, chunked uploads, AI
+api/             Vercel Function entry
 tests/           unit, integration, e2e, DOCX fixture corpus
 ```
 
@@ -74,15 +96,20 @@ new numbering/styles/media, and keeps every other part untouched. Every export r
 refused if it fails. Exports are always new files; the uploaded original is never modified.
 
 **Persistence and recovery.** The live document is a Yjs CRDT. Edits are saved to IndexedDB on the device
-immediately (crash/offline recovery) and synced over WebSockets to the server, which persists the CRDT state.
-JSON snapshots are saved every 4 seconds while editing, automatic versions every 10 minutes, named versions on
-demand (`⌘/Ctrl+S`); any version can be previewed and restored, and restoring saves the current state first.
+immediately (crash/offline recovery) and synced over HTTP to the server (push on change, pull every ~1.2 s),
+which appends them to Postgres and periodically compacts them. HTTP sync works on serverless hosts that don't
+support WebSockets. Images and original DOCX files are stored in Postgres in chunks that fit serverless request
+limits; images are served from `/api/media/<id>`. JSON snapshots are saved every 4 seconds, automatic versions every
+10 minutes, named versions on demand (`⌘/Ctrl+S`).
 
-**Security.** No-login guest identities are random, last a year, can't be signed into with a password,
-and can only reach their own documents. Accounts use scrypt password hashes; HttpOnly SameSite=Strict session cookies; server-side role checks on
-every route and WebSocket (viewers receive updates but their writes are dropped); CSRF header and Origin
-checks; CSP and hardening headers; rate limits on auth and AI; sanitised HTML import and paste; link and
-image URL allow-lists; XML entity and zip-bomb defences; all SQL parameterised.
+**Security.** zod validation on every request body and route parameter; server-side sanitising of stored
+content (unsafe link/image URLs and unknown node types removed); authorization on every route (owner / editor /
+viewer; viewers' sync writes are refused); rate limits stored in the database (auth, guest creation, uploads, AI,
+general API) so they hold across serverless instances; parameterised SQL only; strict same-origin CORS; CSRF header
+check; CSP, HSTS, X-Frame-Options, X-Content-Type-Options, Referrer-Policy, COOP, Permissions-Policy; HttpOnly
+SameSite=Strict Secure session cookies; scrypt password hashes with constant-time comparison; no-login guest
+identities can't be signed into with a password; uploads verified by magic bytes; generic error messages with no
+stack traces; no source maps in production; XML entity and zip-bomb defences in the DOCX reader.
 
 ## DOCX compatibility matrix
 
@@ -121,5 +148,6 @@ Tested with a corpus generated by the independent `docx` library plus hand-injec
 - PDF export uses the browser print engine with the first section's page size for all pages.
 - Fields in the body show their cached value (PAGE/NUMPAGES are live in headers and footers).
 - Track changes record edits inside a paragraph; structural edits across paragraphs aren't tracked.
-- Storage is SQLite (built into Node). The storage layer is one module (`server/db.js`), so swapping it for
-  PostgreSQL is localised but not done. Media is stored inside documents rather than in S3-compatible storage.
+- Collaboration uses HTTP polling (~1.2 s) rather than WebSockets, because Vercel Functions don't hold sockets.
+- Images are limited to 4 MB each (one serverless response); original DOCX files up to 100 MB are stored in chunks.
+- Media and originals live in Postgres; on Neon's free tier the database is limited to 0.5 GB.
