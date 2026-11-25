@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { EditorContent, useEditor } from '@tiptap/react'
 import { api } from '../api'
 import { isSafeUrl, schemaExtensions } from '../model/extensions'
@@ -51,10 +51,11 @@ export function PageSetupDialog({ sections, initialSection, onApply, onClose }: 
   const [page, setPage] = useState<PageSetup>({ ...sections[initialSection].page })
   const [titlePage, setTitlePage] = useState(!!sections[initialSection].titlePage)
   const [scope, setScope] = useState<'this' | 'all'>(sections.length > 1 ? 'this' : 'all')
-  useEffect(() => {
-    setPage({ ...sections[idx].page })
-    setTitlePage(!!sections[idx].titlePage)
-  }, [idx, sections])
+  const chooseSection = (i: number) => {
+    setIdx(i)
+    setPage({ ...sections[i].page })
+    setTitlePage(!!sections[i].titlePage)
+  }
   const f = unit === 'in' ? INCH : MM
   const fmt = (tw: number) => String(Math.round((tw / f) * 100) / 100)
   const set = (k: keyof PageSetup) => (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -87,7 +88,7 @@ export function PageSetupDialog({ sections, initialSection, onApply, onClose }: 
         {sections.length > 1 && (
           <label>
             Section
-            <select value={idx} onChange={(e) => setIdx(Number(e.target.value))}>
+            <select value={idx} onChange={(e) => chooseSection(Number(e.target.value))}>
               {sections.map((_, i) => (
                 <option key={i} value={i}>
                   Section {i + 1}
@@ -292,11 +293,13 @@ export function ShareDialog({ docId, isOwner, onClose }: { docId: string; isOwne
   const [role, setRole] = useState('editor')
   const [error, setError] = useState('')
   const toast = useToast()
-  const load = () => api<{ shares: any[] }>(`/api/docs/${docId}/shares`).then((r) => setShares(r.shares)).catch((e) => setError(e.message))
+  const load = useCallback(
+    () => api<{ shares: any[] }>(`/api/docs/${docId}/shares`).then((r) => setShares(r.shares)).catch((e) => setError(e.message)),
+    [docId],
+  )
   useEffect(() => {
     load()
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
+  }, [load])
   const add = async (e: React.FormEvent) => {
     e.preventDefault()
     setError('')
