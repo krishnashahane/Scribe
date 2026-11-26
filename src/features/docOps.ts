@@ -1,6 +1,8 @@
 // Editor operations shared by the References, Mailings and styles UI.
 
 import type { Editor } from '@tiptap/react'
+import type { PageInfo } from '../layout/pagination'
+import type { TocEntry } from '../model/extensions'
 import type { DocMeta, Source, StyleDef } from '../model/types'
 import { BIBLIOGRAPHY_TITLES, formatBibliography, formatCitation, parseCitationInstr } from './citations'
 import { headingLevelOfStyle } from './styles'
@@ -76,4 +78,61 @@ export function styleFromSelection(editor: Editor): Partial<StyleDef> {
   if (para.spacingAfter != null) out.spacingAfter = para.spacingAfter
   if (para.lineSpacing != null && (!para.lineRule || para.lineRule === 'auto')) out.lineSpacing = para.lineSpacing
   return out
+}
+
+// ---------------------------------------------------------------------------
+// Table of contents
+
+/** Headings up to `levels`, with the number of the page each one is on (from the live layout). */
+export function tocEntries(editor: Editor, pages: PageInfo[], zoom: number, levels: number): TocEntry[] {
+  const out: TocEntry[] = []
+  const root = editor.view.dom.getBoundingClientRect()
+  editor.state.doc.descendants((node, pos) => {
+    if (node.type.name !== 'heading') return node.type.name !== 'paragraph'
+    const level = Number(node.attrs.level) || 1
+    if (level > levels || !node.textContent.trim()) return false
+    let page = ''
+    const dom = editor.view.nodeDOM(pos) as HTMLElement | null
+    if (dom && pages.length) {
+      const y = (dom.getBoundingClientRect().top - root.top) / (zoom || 1)
+      const p = pages.find((pg) => y < pg.top + pg.height) ?? pages[pages.length - 1]
+      page = String(p.number)
+    }
+    out.push({ level, text: node.textContent.trim(), page, target: node.attrs.nid ?? undefined })
+    return false
+  })
+  return out
+}
+
+/** Rebuild every table of contents. `onlyOwn` skips imported tables that were never updated. */
+export function updateTocs(editor: Editor, pages: PageInfo[], zoom: number, onlyOwn = false): number {
+  const { state } = editor
+  const tr = state.tr
+  let n = 0
+  state.doc.descendants((node, pos) => {
+    if (node.type.name !== 'toc') return node.type.name !== 'paragraph'
+    if (onlyOwn && node.attrs.rawXml && !node.attrs.updated) return false
+    const entries = tocEntries(editor, pages, zoom, Number(node.attrs.levels) || 3)
+    if (JSON.stringify(entries) !== JSON.stringify(node.attrs.entries) || !node.attrs.updated) {
+      tr.setNodeMarkup(pos, undefined, { ...node.attrs, entries, updated: true })
+      n++
+    }
+    return false
+  })
+  if (n) editor.view.dispatch(tr.setMeta('addToHistory', !onlyOwn))
+  return n
+}
+
+/** Scroll to the heading a table-of-contents entry points to. */
+export function goToHeading(editor: Editor, nid: string): boolean {
+  let at = -1
+  editor.state.doc.descendants((node, pos) => {
+    if (at !== -1) return false
+    if (node.type.name === 'heading' && node.attrs.nid === nid) at = pos
+    return true
+  })
+  if (at === -1) return false
+  editor.chain().focus().setTextSelection(at + 1).run()
+  ;(editor.view.nodeDOM(at) as HTMLElement | null)?.scrollIntoView({ block: 'start', behavior: 'smooth' })
+  return true
 }
