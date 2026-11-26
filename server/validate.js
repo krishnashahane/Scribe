@@ -86,8 +86,40 @@ const SAFE_IMG = /^(data:image\/(png|jpe?g|gif|webp|bmp);base64,[A-Za-z0-9+/=]+$
 const NODE_TYPES = new Set([
   'doc', 'paragraph', 'heading', 'text', 'hardBreak', 'bulletList', 'orderedList', 'listItem', 'blockquote', 'codeBlock',
   'horizontalRule', 'table', 'tableRow', 'tableCell', 'tableHeader', 'image', 'pageBreak', 'sectionBreak', 'columnBreak',
-  'bookmark', 'field', 'noteRef', 'opaqueBlock', 'opaqueInline', 'shape', 'bibliography',
+  'bookmark', 'field', 'noteRef', 'opaqueBlock', 'opaqueInline', 'shape', 'bibliography', 'toc',
 ])
+
+// values that are rendered into inline style attributes (mirrors src/model/safeCss.ts)
+const COLOR = /^(?:#[0-9a-f]{3,8}|[a-z]{3,24}|(?:rgb|rgba|hsl|hsla)\(\s*[\d.%]+\s*(?:,\s*|\s+)[\d.%]+\s*(?:,\s*|\s+)[\d.%]+\s*(?:(?:,|\/)\s*[\d.%]+\s*)?\))$/i
+const FONT = /^[\p{L}\p{N}\s,'"_.-]{1,200}$/u
+const LENGTH = /^-?\d{1,4}(?:\.\d{1,3})?(?:pt|px|em|rem|%)$/i
+const KEYWORDS = {
+  textAlign: ['left', 'center', 'right', 'justify'],
+  verticalAlign: ['top', 'middle', 'bottom', 'baseline'],
+  listStyle: ['disc', 'circle', 'square', 'decimal', 'decimal-leading-zero', 'lower-alpha', 'upper-alpha', 'lower-latin', 'upper-latin', 'lower-roman', 'upper-roman', 'lower-greek', 'none'],
+}
+const STYLE_ATTRS = {
+  color: (v) => COLOR.test(v),
+  backgroundColor: (v) => COLOR.test(v),
+  background: (v) => COLOR.test(v),
+  shading: (v) => COLOR.test(v),
+  fontFamily: (v) => FONT.test(v),
+  fontSize: (v) => LENGTH.test(v),
+  letterSpacing: (v) => LENGTH.test(v),
+  textAlign: (v) => KEYWORDS.textAlign.includes(v),
+  verticalAlign: (v) => KEYWORDS.verticalAlign.includes(v),
+  listStyle: (v) => KEYWORDS.listStyle.includes(v),
+}
+
+/** Drop style-bearing attribute values that are not plain colours, fonts, lengths or keywords. */
+function cleanStyleAttrs(attrs) {
+  const out = { ...attrs }
+  for (const [k, ok] of Object.entries(STYLE_ATTRS)) {
+    if (out[k] == null) continue
+    if (typeof out[k] !== 'string' || out[k].length > 200 || !ok(out[k].trim())) out[k] = null
+  }
+  return out
+}
 
 /** Remove unsafe URLs and unknown node types from ProseMirror JSON. Returns a new object. */
 export function sanitizeContent(node, depth = 0) {
@@ -95,7 +127,7 @@ export function sanitizeContent(node, depth = 0) {
   if (typeof node.type !== 'string' || !NODE_TYPES.has(node.type)) return null
   const out = { type: node.type }
   if (node.attrs && typeof node.attrs === 'object') {
-    out.attrs = { ...node.attrs }
+    out.attrs = cleanStyleAttrs(node.attrs)
     if (node.type === 'image' && !SAFE_IMG.test(String(out.attrs.src ?? ''))) return null
   }
   if (typeof node.text === 'string') out.text = node.text
@@ -103,6 +135,7 @@ export function sanitizeContent(node, depth = 0) {
     out.marks = node.marks
       .filter((m) => m && typeof m.type === 'string')
       .filter((m) => m.type !== 'link' || SAFE_LINK.test(String(m.attrs?.href ?? '')))
+      .map((m) => (m.attrs && typeof m.attrs === 'object' ? { ...m, attrs: cleanStyleAttrs(m.attrs) } : m))
   }
   if (Array.isArray(node.content)) out.content = node.content.map((c) => sanitizeContent(c, depth + 1)).filter(Boolean)
   return out
