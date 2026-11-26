@@ -955,7 +955,7 @@ async function parseSection(sectPr: Element | null, ctx: Ctx): Promise<SectionPr
   const cols = intAttr(wChild(sectPr, 'cols'), 'num')
   if (cols && cols > 1) {
     sec.columns = cols
-    ctx.report.add('transformed', 'Multi-column sections', 'Column settings are kept and can be changed from Layout → Columns; SCRIBE shows the text in a single column while editing.')
+    ctx.report.add('transformed', 'Multi-column sections', 'Columns are shown while editing and kept on export; within a column section, paragraphs, lists and tables move to the next column whole rather than splitting.')
   }
   const start = intAttr(wChild(sectPr, 'pgNumType'), 'start')
   if (start != null) sec.pageNumberStart = start
