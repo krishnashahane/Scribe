@@ -173,7 +173,7 @@ export function ChartDialog({ chart, onSave, onClose }: { chart: ChartData; onSa
     )
   const setCell = (si: number, ri: number, v: string) => setSeries(series.map((s, k) => (k === si ? { ...s, values: Array.from({ length: rows }, (_, i) => (i === ri ? v : s.values[i] ?? '')) } : s)))
   return (
-    <Dialog title={chart.isNew ? 'Chart' : `Edit ${KIND_LABEL[chart.kind].toLowerCase()} chart`} onClose={onClose} wide footer={<Footer onClose={onClose} onSave={() => onSave(data)} disabled={invalid} label={chart.isNew && !chart.part ? 'Save chart' : 'Save'} />}>
+    <Dialog title={chart.isNew ? 'Chart' : `Edit ${KIND_LABEL[chart.kind].toLowerCase()} chart`} onClose={onClose} wide footer={<Footer onClose={onClose} onSave={() => onSave(data)} disabled={invalid} label="Save" />}>
       <div className="sc-chart-editor">
         <div className="sc-form">
           {chart.isNew && (
