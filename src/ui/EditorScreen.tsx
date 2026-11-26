@@ -13,6 +13,7 @@ import { applyParagraphStyle, citedTags, refreshCitations, styleFromSelection } 
 import { galleryStyles, headingLevelOfStyle } from '../features/styles'
 import { DEFAULT_SHAPE, SHAPE_KINDS, type ShapeAttrs, type ShapeKind } from '../objects/shapes'
 import { ommlToTree, toLinear } from '../objects/math'
+import { newChart } from '../objects/chart'
 import type { ObjectInfo } from '../model/extensions'
 import type { StyleDef } from '../model/types'
 import { ChartDialog, CustomXmlDialog, DrawDialog, EquationDialog, ShapeDialog, SmartArtDialog, TextBoxDialog } from './ObjectDialogs'
@@ -52,6 +53,7 @@ type DialogState =
   | { kind: 'account' }
   | { kind: 'object'; pos: number }
   | { kind: 'equation' }
+  | { kind: 'newChart' }
   | { kind: 'newShape'; shape: ShapeAttrs }
   | { kind: 'draw' }
   | { kind: 'customXml' }
@@ -534,6 +536,8 @@ function DocEditor({ docId, info, session, status, user, onUser, theme, onToggle
         return setShowMarks((v) => !v)
       case 'equation':
         return setDialog({ kind: 'equation' })
+      case 'chart':
+        return setDialog({ kind: 'newChart' })
       case 'textbox':
         return setDialog({ kind: 'newShape', shape: { ...DEFAULT_SHAPE, kind: 'rect', fill: '#ffffff', stroke: '#1f2937', strokeWidth: 1, width: 220, height: 90, text: 'Text box' } })
       case 'draw':
@@ -1020,6 +1024,18 @@ function DocEditor({ docId, info, session, status, user, onUser, theme, onToggle
         if (obj.kind === 'smartart') return <SmartArtDialog data={obj.smartArt} onClose={close} onSave={(smartArt) => updateNodeAt(dialog.pos, node, { object: { ...obj, smartArt }, preview: smartArt.items.map((i) => i.text).filter(Boolean).join(' · ').slice(0, 200) })} />
         return null
       })()}
+      {dialog?.kind === 'newChart' && (
+        <ChartDialog
+          chart={newChart('column')}
+          onClose={() => setDialog(null)}
+          onSave={(chart) => {
+            const p = live.meta.sections[0].page
+            const width = Math.min(480, Math.round(twipToPx(p.width - p.marginLeft - p.marginRight)))
+            editor.chain().focus().insertContent({ type: 'opaqueInline', attrs: { xml: '', label: 'Chart', preview: chart.title || 'Chart', object: { kind: 'chart', chart, width, height: Math.round(width * 0.6) } } }).run()
+            setDialog(null)
+          }}
+        />
+      )}
       {dialog?.kind === 'equation' && <EquationDialog xml={null} onClose={() => setDialog(null)} onSave={insertEquation} />}
       {dialog?.kind === 'newShape' && (
         <ShapeDialog
