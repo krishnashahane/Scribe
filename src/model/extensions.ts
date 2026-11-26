@@ -27,36 +27,37 @@ export function isSafeUrl(url: string, allowData = false): boolean {
 export const ParagraphFormat = Extension.create({
   name: 'paragraphFormat',
   addGlobalAttributes() {
-    const num = (name: string) => ({
+    // key: the node attribute; name: its data-* attribute in HTML
+    const num = (key: string, name: string) => ({
       default: null,
       parseHTML: (el: HTMLElement) => {
         const v = el.getAttribute(`data-${name}`)
-        return v == null ? null : Number(v)
+        return v == null || v === '' || !Number.isFinite(Number(v)) ? null : Number(v)
       },
-      renderHTML: (attrs: Record<string, any>) => (attrs[name] == null ? {} : { [`data-${name}`]: attrs[name] }),
+      renderHTML: (attrs: Record<string, any>) => (attrs[key] == null ? {} : { [`data-${name}`]: attrs[key] }),
     })
-    const str = (name: string) => ({
+    const str = (key: string, name: string) => ({
       default: null,
       parseHTML: (el: HTMLElement) => el.getAttribute(`data-${name}`),
-      renderHTML: (attrs: Record<string, any>) => (attrs[name] == null ? {} : { [`data-${name}`]: attrs[name] }),
+      renderHTML: (attrs: Record<string, any>) => (attrs[key] == null ? {} : { [`data-${name}`]: attrs[key] }),
     })
     return [
       {
         types: BLOCK_TYPES,
         attributes: {
-          styleId: str('style-id'),
-          indentLeft: num('indent-left'),
-          indentRight: num('indent-right'),
-          indentFirstLine: num('indent-first-line'),
-          spacingBefore: num('spacing-before'),
-          spacingAfter: num('spacing-after'),
+          styleId: str('styleId', 'style-id'),
+          indentLeft: num('indentLeft', 'indent-left'),
+          indentRight: num('indentRight', 'indent-right'),
+          indentFirstLine: num('indentFirstLine', 'indent-first-line'),
+          spacingBefore: num('spacingBefore', 'spacing-before'),
+          spacingAfter: num('spacingAfter', 'spacing-after'),
           /** line spacing: for rule "auto" a multiple (1.15), otherwise twips */
-          lineSpacing: num('line-spacing'),
-          lineRule: str('line-rule'),
+          lineSpacing: num('lineSpacing', 'line-spacing'),
+          lineRule: str('lineRule', 'line-rule'),
           pageBreakBefore: { default: null },
           keepNext: { default: null },
-          shading: str('shading'),
-          direction: str('dir'),
+          shading: str('shading', 'shading'),
+          direction: str('direction', 'dir'),
           /** Raw unknown <w:pPr> children, re-emitted verbatim on DOCX export. */
           pPrExtra: { default: null, rendered: false },
           /** Paragraph-mark run properties (affects empty-paragraph height). */
