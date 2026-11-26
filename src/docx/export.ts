@@ -238,6 +238,33 @@ interface Ctx {
   editedParts: Set<string>
 }
 
+/** Table of contents as a content control holding a TOC field (desktop editors can update it too). */
+function tocXml(b: PMNode, ctx: Ctx): string {
+  const levels = Math.min(9, Math.max(1, Number(b.attrs?.levels) || 3))
+  const entries = (Array.isArray(b.attrs?.entries) ? b.attrs!.entries : []) as { level: number; text: string; page: string }[]
+  ctx.usedStyles.add('TOCHeading')
+  const title = `<w:p><w:pPr><w:pStyle w:val="TOCHeading"/></w:pPr><w:r><w:t xml:space="preserve">${esc(String(b.attrs?.title || 'Contents'))}</w:t></w:r></w:p>`
+  const begin = `<w:r><w:fldChar w:fldCharType="begin"/></w:r><w:r><w:instrText xml:space="preserve"> TOC \\o "1-${levels}" \\h \\z \\u </w:instrText></w:r><w:r><w:fldChar w:fldCharType="separate"/></w:r>`
+  const end = `<w:r><w:fldChar w:fldCharType="end"/></w:r>`
+  const rows = entries.length ? entries : [{ level: 1, text: 'No table of contents entries found.', page: '' }]
+  const paras = rows.map((e, i) => {
+    const lvl = Math.min(9, Math.max(1, Number(e.level) || 1))
+    ctx.usedStyles.add(`TOC${lvl}`)
+    const body = `<w:r><w:t xml:space="preserve">${esc(String(e.text))}</w:t></w:r>` + (e.page !== '' ? `<w:r><w:tab/></w:r><w:r><w:t>${esc(String(e.page))}</w:t></w:r>` : '')
+    return `<w:p><w:pPr><w:pStyle w:val="TOC${lvl}"/></w:pPr>${i === 0 ? begin : ''}${body}${i === rows.length - 1 ? end : ''}</w:p>`
+  })
+  return `<w:sdt><w:sdtPr><w:id w:val="${ctx.ids.bookmark++}"/><w:docPartObj><w:docPartGallery w:val="Table of Contents"/><w:docPartUnique/></w:docPartObj></w:sdtPr><w:sdtContent>${title}${paras.join('')}</w:sdtContent></w:sdt>`
+}
+
+function tocStyleXml(id: string, textWidthTwips: number): string | null {
+  if (id === 'TOCHeading')
+    return `<w:style w:type="paragraph" w:styleId="TOCHeading"><w:name w:val="TOC Heading"/><w:basedOn w:val="Normal"/><w:next w:val="Normal"/><w:uiPriority w:val="39"/><w:unhideWhenUsed/><w:qFormat/><w:pPr><w:keepNext/><w:spacing w:before="240" w:after="120"/></w:pPr><w:rPr><w:b/><w:bCs/><w:color w:val="1F2A44"/><w:sz w:val="32"/><w:szCs w:val="32"/></w:rPr></w:style>`
+  const m = /^TOC([1-9])$/.exec(id)
+  if (!m) return null
+  const n = Number(m[1])
+  return `<w:style w:type="paragraph" w:styleId="TOC${n}"><w:name w:val="toc ${n}"/><w:basedOn w:val="Normal"/><w:next w:val="Normal"/><w:uiPriority w:val="39"/><w:unhideWhenUsed/><w:pPr><w:tabs><w:tab w:val="right" w:leader="dot" w:pos="${Math.max(2000, Math.round(textWidthTwips))}"/></w:tabs><w:spacing w:after="100"/><w:ind w:left="${(n - 1) * 220}"/></w:pPr>${n === 1 ? '<w:rPr><w:b/><w:bCs/></w:rPr>' : ''}</w:style>`
+}
+
 const REL_CHART = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/chart'
 const CT_CHART = 'application/vnd.openxmlformats-officedocument.drawingml.chart+xml'
 
@@ -781,6 +808,14 @@ async function blocksXml(blocks: PMNode[] | undefined, ctx: Ctx, opts: { topLeve
       case 'opaqueBlock':
         out += String(b.attrs?.xml || '')
         break
+      case 'toc': {
+        if (b.attrs?.rawXml && !b.attrs?.updated) {
+          out += String(b.attrs.rawXml)
+          break
+        }
+        out += tocXml(b, ctx)
+        break
+      }
       case 'bibliography': {
         const entries = (Array.isArray(b.attrs?.entries) ? b.attrs!.entries : []) as { text: string; italic?: boolean }[][]
         let inner = await paragraphXml({ type: 'heading', attrs: { level: 1 }, content: [{ type: 'text', text: String(b.attrs?.title || 'References') }] }, ctx)
@@ -1195,6 +1230,10 @@ export async function exportDocx(doc: ScribeDocument, original?: Uint8Array | nu
     else if (id === 'Quote') missing.push(QUOTE_STYLE)
     else if (id === 'TableGrid') missing.push(TABLE_GRID_STYLE)
     else if (id === 'Hyperlink') missing.push(HYPERLINK_STYLE)
+    else {
+      const toc = tocStyleXml(id, ctx.textWidthTwips)
+      if (toc) missing.push(toc)
+    }
   }
   if (missing.length || !original || styleEdits) {
     const s = serializeXml(styleDoc).replace(/<\/w:styles>\s*$/, missing.join('') + '</w:styles>')
