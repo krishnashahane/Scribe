@@ -520,3 +520,66 @@ export function CustomXmlDialog({ parts, readOnly, onSave, onClose }: { parts: C
     </Dialog>
   )
 }
+
+// ---------------------------------------------------------------------------
+// Symbols and special characters
+
+const SYMBOL_SETS: [string, string][] = [
+  ['Common', '©®™§¶†‡•…–—‘’“”«»‹›°±×÷≈≠≤≥∞√∑∏∫∂µ¼½¾¹²³'],
+  ['Currency', '€£¥¢₹₩₽₺₪₫₴₦₱฿₿$¤'],
+  ['Arrows', '←↑→↓↔↕⇐⇑⇒⇓⇔↩↪↺↻➔➜⟵⟶⟷'],
+  ['Math', '∀∃∄∅∈∉∋⊂⊃⊆⊇∪∩∧∨¬⊕⊗⊥∥∠∴∵∝∼≅≡≪≫∇∆∑∏∫∮ℕℤℚℝℂ'],
+  ['Greek', 'αβγδεζηθικλμνξοπρστυφχψωΑΒΓΔΕΖΗΘΙΚΛΜΝΞΟΠΡΣΤΥΦΧΨΩ'],
+  ['Latin', 'ÀÁÂÃÄÅÆÇÈÉÊËÌÍÎÏÑÒÓÔÕÖØŒÙÚÛÜÝßàáâãäåæçèéêëìíîïñòóôõöøœùúûüýÿ'],
+  ['Shapes', '■□▪▫▲△▶▷▼▽◀◁◆◇○●◎★☆♠♣♥♦✓✔✗✘☐☑☒'],
+  ['Spaces & marks', '   ‑­‐‑‒¡¿‰′″‴'],
+]
+const SPACE_NAMES: Record<string, string> = { ' ': 'No-break space', ' ': 'Thin space', ' ': 'Hair space', '‑': 'No-break hyphen', '­': 'Soft hyphen' }
+
+export function SymbolDialog({ onInsert, onClose }: { onInsert: (ch: string) => void; onClose: () => void }) {
+  const [set, setSet] = useState(0)
+  const [recent, setRecent] = useState<string[]>(() => {
+    try {
+      const r = JSON.parse(localStorage.getItem('scribe-recent-symbols') || '[]')
+      return Array.isArray(r) ? r.filter((x) => typeof x === 'string' && [...x].length === 1).slice(0, 16) : []
+    } catch {
+      return []
+    }
+  })
+  const pick = (ch: string) => {
+    onInsert(ch)
+    const next = [ch, ...recent.filter((x) => x !== ch)].slice(0, 16)
+    setRecent(next)
+    localStorage.setItem('scribe-recent-symbols', JSON.stringify(next))
+  }
+  const label = (ch: string) => SPACE_NAMES[ch] ?? `${ch} (U+${ch.codePointAt(0)!.toString(16).toUpperCase().padStart(4, '0')})`
+  const grid = (chars: string[]) => (
+    <div className="sc-symbol-grid" role="grid">
+      {chars.map((ch) => (
+        <button key={ch} className="sc-symbol" title={label(ch)} aria-label={label(ch)} onMouseDown={(e) => e.preventDefault()} onClick={() => pick(ch)}>
+          {SPACE_NAMES[ch] ? <span className="sc-symbol-name">{SPACE_NAMES[ch].replace(/ (space|hyphen)$/, '')}</span> : ch}
+        </button>
+      ))}
+    </div>
+  )
+  return (
+    <Dialog title="Insert symbol" onClose={onClose} wide footer={<button className="sc-primary" onClick={onClose}>Done</button>}>
+      <div className="sc-toggle-row" role="tablist" aria-label="Symbol sets">
+        {SYMBOL_SETS.map(([name], i) => (
+          <button key={name} role="tab" aria-selected={set === i} className={set === i ? 'is-active' : ''} onClick={() => setSet(i)}>
+            {name}
+          </button>
+        ))}
+      </div>
+      {recent.length > 0 && (
+        <>
+          <p className="sc-muted sc-symbol-heading">Recently used</p>
+          {grid(recent)}
+        </>
+      )}
+      <p className="sc-muted sc-symbol-heading">{SYMBOL_SETS[set][0]}</p>
+      {grid([...SYMBOL_SETS[set][1]])}
+      <p className="sc-muted">Click a symbol to insert it at the cursor; the dialog stays open so you can add more.</p>
+    </Dialog>
+  )
+}
