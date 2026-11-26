@@ -632,3 +632,45 @@ textarea { height: auto; min-height: 70px; padding: 8px 10px; resize: vertical; 
 /* page-break spacer inside a table (tables break between rows) */
 .sc-doc tr.sc-page-spacer-row td { border: none !important; padding: 0 !important; background: transparent !important; }
 .sc-doc tr.sc-page-spacer-row + tr > td { border-top-width: 1px; }
+
+/* table of contents */
+.sc-doc .sc-toc { margin: 0 0 12pt; padding: 2px 0; border-radius: 2px; user-select: none; }
+.sc-doc .sc-toc:hover { box-shadow: 0 0 0 1px #d5dbe6; }
+.sc-doc .sc-toc.ProseMirror-selectednode { box-shadow: 0 0 0 2px #3461b0; }
+.sc-doc .sc-toc-title { font-size: 16pt; font-weight: 700; color: #1f2a44; margin: 0 0 8pt; }
+.sc-doc .sc-toc-entry { display: flex; align-items: baseline; gap: 4px; margin: 0 0 4pt; cursor: pointer; }
+.sc-doc .sc-toc-entry:hover .sc-toc-text { color: #2f5597; text-decoration: underline; }
+.sc-doc .sc-toc-entry.is-level-1 { font-weight: 700; }
+.sc-doc .sc-toc-entry.is-level-2 { padding-left: 0.15in; } .sc-doc .sc-toc-entry.is-level-3 { padding-left: 0.3in; }
+.sc-doc .sc-toc-entry.is-level-4 { padding-left: 0.45in; } .sc-doc .sc-toc-entry.is-level-5, .sc-doc .sc-toc-entry.is-level-6 { padding-left: 0.6in; }
+.sc-doc .sc-toc-leader { flex: 1; border-bottom: 1.5px dotted #9aa3b2; transform: translateY(-3px); min-width: 12px; }
+.sc-doc .sc-toc-page { font-variant-numeric: tabular-nums; min-width: 1.5em; text-align: right; }
+
+/* symbol picker */
+.sc-symbol-heading { margin: 12px 0 6px; font-weight: 600; }
+.sc-symbol-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(38px, 1fr)); gap: 4px; }
+.sc-symbol { height: 38px; border-radius: 8px; border: 1px solid var(--line); background: var(--surface); font-size: 18px; font-family: Calibri, Carlito, 'Segoe UI Symbol', 'Apple Symbols', sans-serif; transition: all 0.1s; }
+.sc-symbol:hover { border-color: var(--accent-2); background: var(--accent-soft); transform: scale(1.08); }
+.sc-symbol-name { font-size: 9px; color: var(--text-2); line-height: 1.1; display: block; }
+
+/* command search */
+.sc-search-btn { gap: 8px; padding: 0 10px 0 9px; height: 32px; min-width: 180px; justify-content: flex-start; border: 1px solid var(--line) !important; background: var(--surface-2); color: var(--text-2); border-radius: 9px; }
+.sc-search-btn:hover { border-color: var(--line-strong) !important; color: var(--text); }
+.sc-search-btn span { font-size: 13px; flex: 1; text-align: left; }
+.sc-search-btn kbd, .sc-palette kbd { font-family: var(--ui-font); font-size: 11px; color: var(--text-2); background: var(--surface); border: 1px solid var(--line); border-radius: 5px; padding: 1px 6px; }
+.sc-palette-overlay { place-items: start center; padding-top: 12vh; }
+.sc-palette { width: min(640px, 100%); background: var(--surface); border: 1px solid var(--line); border-radius: 16px; box-shadow: var(--shadow-lg); overflow: hidden; animation: sc-pop 0.14s var(--ease); }
+.sc-palette-input { display: flex; align-items: center; gap: 10px; padding: 12px 16px; border-bottom: 1px solid var(--line); color: var(--text-2); }
+.sc-palette-input input { flex: 1; border: none; outline: none; background: transparent; font-size: 16px; height: 32px; color: var(--text); }
+.sc-palette-input input:focus { box-shadow: none; }
+.sc-palette-list { list-style: none; margin: 0; padding: 6px; max-height: min(420px, 60vh); overflow: auto; }
+.sc-palette-list li { display: flex; align-items: center; gap: 10px; padding: 9px 12px; border-radius: 9px; cursor: pointer; font-size: 14px; }
+.sc-palette-list li.is-active { background: var(--accent-soft); }
+.sc-palette-label { flex: 1; }
+.sc-palette-group { font-size: 12px; color: var(--text-2); }
+.sc-palette-empty { color: var(--text-2); justify-content: center; cursor: default !important; }
+@media (max-width: 900px) { .sc-search-btn { min-width: 0; } .sc-search-btn span, .sc-search-btn kbd { display: none; } }
+
+/* empty document hint */
+.ProseMirror.sc-doc > p:only-child:has(> br.ProseMirror-trailingBreak:only-child)::before { content: 'Start typing — or press ⌘/Ctrl+Shift+P to find any command'; color: #9aa1ad; position: absolute; pointer-events: none; }
+@media print { .ProseMirror.sc-doc > p:only-child::before { content: none !important; } }
