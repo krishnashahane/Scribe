@@ -233,3 +233,47 @@ describe('new charts', () => {
     expect(Object.keys((await JSZip.loadAsync(again.data)).files).filter((f) => /^word\/charts\/chart\d+\.xml$/.test(f)).length).toBe(6)
   })
 })
+
+describe('footnotes and endnotes', () => {
+  it('creates footnote and endnote parts for notes added in SCRIBE', async () => {
+    const d = doc(
+      [para({ type: 'text', text: 'Claim' }, { type: 'noteRef', attrs: { noteId: '1', kind: 'footnote', label: '1' } }, { type: 'text', text: ' and more' }, { type: 'noteRef', attrs: { noteId: '1', kind: 'endnote', label: '1' } })],
+      { footnotes: [{ id: '1', text: 'Source: the 2020 survey.\nSecond line', edited: true }, { id: '2', text: 'Unreferenced', edited: true }], endnotes: [{ id: '1', text: 'An endnote & more', edited: true }] },
+    )
+    const { back, data } = await roundTrip(d, undefined, 'notes.docx')
+    expect(back.doc.meta.footnotes.map((n) => [n.id, n.text])).toEqual([['1', 'Source: the 2020 survey.\nSecond line']])
+    expect(back.doc.meta.endnotes.map((n) => n.text)).toEqual(['An endnote & more'])
+    const zip = await JSZip.loadAsync(data)
+    const fn = await zip.file('word/footnotes.xml')!.async('string')
+    expect(fn).toContain('w:type="separator"')
+    expect(fn).not.toContain('Unreferenced')
+    expect(find(back.doc.content, (n) => n.type === 'noteRef').map((n) => n.attrs!.kind)).toEqual(['footnote', 'endnote'])
+  })
+
+  it('rewrites only edited notes of an imported file and keeps the others exactly', async () => {
+    const original = fx('complex.docx')
+    const r = await importDocx(original)
+    expect(r.doc.meta.footnotes.length).toBeGreaterThan(0)
+    const before = await (await JSZip.loadAsync(original)).file('word/footnotes.xml')!.async('string')
+    const target = r.doc.meta.footnotes[0]
+    r.doc.meta.footnotes = r.doc.meta.footnotes.map((n) => (n.id === target.id ? { ...n, text: 'Edited footnote text', edited: true } : n))
+    const { back, data } = await roundTrip(r.doc, original, 'notes-edited.docx')
+    expect(back.doc.meta.footnotes.find((n) => n.id === target.id)!.text).toBe('Edited footnote text')
+    const after = await (await JSZip.loadAsync(data)).file('word/footnotes.xml')!.async('string')
+    for (const other of r.doc.meta.footnotes.filter((n) => n.id !== target.id)) expect(after).toContain(other.text)
+    expect(before).not.toContain('Edited footnote text')
+  })
+})
+
+describe('section columns', () => {
+  it('writes the column count chosen in SCRIBE and reads it back', async () => {
+    const text = 'Column text flows here. '.repeat(120)
+    const base = emptyDocument().meta.sections[0]
+    const d = doc([para({ type: 'text', text })], { sections: [{ ...base, columns: 2, columnsEdited: true }] })
+    const { back, data } = await roundTrip(d, undefined, 'columns.docx')
+    expect(back.doc.meta.sections[0].columns).toBe(2)
+    expect(await (await JSZip.loadAsync(data)).file('word/document.xml')!.async('string')).toContain('<w:cols w:num="2" w:space="720"/>')
+    const one = await roundTrip({ ...back.doc, meta: { ...back.doc.meta, sections: [{ ...back.doc.meta.sections[0], columns: 1, columnsEdited: true }] } }, data)
+    expect(one.back.doc.meta.sections[0].columns).toBeUndefined()
+  })
+})
