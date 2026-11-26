@@ -564,7 +564,7 @@ function DocEditor({ docId, info, session, status, user, onUser, theme, onToggle
       case 'columns-3': {
         const n = Number(a.slice(-1))
         updateSections(sec, (x) => ({ ...x, columns: n, columnsEdited: true }))
-        return toast(n === 1 ? 'This section is set to one column.' : `This section is set to ${n} columns. Exported and printed files show the columns; SCRIBE shows the text in one column while you edit.`, 'info')
+        return toast(n === 1 ? 'This section is set to one column.' : `This section is set to ${n} columns.`, 'info')
       }
       case 'chart':
         return setDialog({ kind: 'newChart' })
@@ -953,11 +953,7 @@ function DocEditor({ docId, info, session, status, user, onUser, theme, onToggle
         <WordCountLive editor={editor} />
         <span className="sc-spacer" />
         <span>{Object.keys(meta.headerFooters).length ? 'Headers/footers on' : ''}</span>
-        {(meta.sections[currentSection()]?.columns ?? 1) > 1 && (
-          <span className="sc-chip-ui" title="Columns appear in exported and printed files; editing shows a single column">
-            {meta.sections[currentSection()]!.columns} columns in the file
-          </span>
-        )}
+        {(meta.sections[currentSection()]?.columns ?? 1) > 1 && <span className="sc-chip-ui">{meta.sections[currentSection()]!.columns} columns</span>}
         <label className="sc-zoom-slider">
           <span className="sc-visually-hidden">Zoom</span>
           <button className="sc-zoom-step" onClick={() => setZoom((z) => Math.max(0.3, Math.round((z - 0.1) * 10) / 10))} aria-label="Zoom out">−</button>
