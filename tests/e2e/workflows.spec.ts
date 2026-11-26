@@ -297,6 +297,11 @@ test('shapes, equations, citations, bibliography, proofing and mail merge work e
   await expect(page.getByRole('dialog').locator('math msup')).toBeVisible()
   await page.getByRole('button', { name: 'Insert', exact: true }).click()
   await expect(page.locator('.sc-doc .sc-equation math')).toBeVisible()
+  await page.getByRole('button', { name: 'Chart', exact: true }).click()
+  await page.getByRole('radio', { name: 'Pie' }).click()
+  await page.getByRole('textbox', { name: 'Chart title' }).fill('Budget split')
+  await page.getByRole('button', { name: 'Save chart' }).click()
+  await expect(page.locator('.sc-doc img.sc-chart')).toHaveAttribute('alt', 'Budget split')
 
   // citation and bibliography
   await page.getByRole('tab', { name: 'References' }).click()
@@ -337,6 +342,7 @@ test('shapes, equations, citations, bibliography, proofing and mail merge work e
   expect(json).toContain('CITATION')
   expect(json).toContain('"type":"bibliography"')
   expect(json).toContain('"kind":"equation"')
+  expect(json).toContain('"title":"Budget split"')
   expect(re.doc.meta.sources?.[0].title).toBe('Writing Well')
   expect(re.doc.meta.citationStyle).toBe('MLA')
 
