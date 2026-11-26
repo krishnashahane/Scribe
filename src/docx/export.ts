@@ -2,7 +2,7 @@ import JSZip from 'jszip'
 import type { CompatibilityIssue, DocMeta, PMNode, ScribeDocument, SectionProps } from '../model/types'
 import { defaultPage, pxToEmu, pxToTwip, twipToPx } from '../model/types'
 import { parseNumbering } from './styles'
-import { applyChart, type ChartData } from '../objects/chart'
+import { applyChart, chartRunXml, newChartXml, type ChartData } from '../objects/chart'
 import { applySmartArtData, applySmartArtDrawing, type SmartArtData } from '../objects/smartart'
 import { shapeRunXml, WPS_NS, type ShapeAttrs } from '../objects/shapes'
 import { BIB_NS, sourcesXml } from '../features/citations'
@@ -231,6 +231,22 @@ interface Ctx {
   textWidthTwips: number
   /** chart / diagram parts already rewritten in this export */
   editedParts: Set<string>
+}
+
+const REL_CHART = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/chart'
+const CT_CHART = 'application/vnd.openxmlformats-officedocument.drawingml.chart+xml'
+
+/** Write a chart created in SCRIBE as a new chart part and return the run that places it. */
+function newChartRun(obj: any, ctx: Ctx, rPr: string): string {
+  const chart = obj.chart as ChartData
+  let n = 1
+  while (ctx.zip.file(`word/charts/chart${n}.xml`)) n++
+  const part = `word/charts/chart${n}.xml`
+  ctx.zip.file(part, newChartXml(chart))
+  ctx.ct.override(part, CT_CHART)
+  const target = ctx.partDir === 'word/' ? `charts/chart${n}.xml` : `${'../'.repeat(ctx.partDir.split('/').filter(Boolean).length)}word/charts/chart${n}.xml`
+  const rid = ctx.rels.add(REL_CHART, target)
+  return chartRunXml(rid, ctx.ids.docPr++, Number(obj.width) || 480, Number(obj.height) || 288, rPr)
 }
 
 /** Rewrite the data parts behind an edited chart or diagram. */
@@ -606,6 +622,10 @@ async function inlinesXml(nodes: PMNode[] | undefined, ctx: Ctx, prefix = ''): P
         break
       }
       case 'opaqueInline':
+        if (n.attrs?.object?.kind === 'chart' && n.attrs.object.chart?.isNew) {
+          group.xml += newChartRun(n.attrs.object, ctx, rPr)
+          break
+        }
         await writeObjectEdits(n.attrs?.object, ctx)
         group.xml += String(n.attrs?.xml || '')
         break
