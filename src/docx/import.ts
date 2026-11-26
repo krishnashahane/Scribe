@@ -177,8 +177,8 @@ async function convertBlocks(container: Element, ctx: Ctx): Promise<PMNode[]> {
         case 'sdt': {
           const gallery = wVal(descendants(c, NS.w, 'docPartGallery')[0])
           if (gallery && /table of contents/i.test(gallery)) {
-            ctx.report.add('preserved', 'Table of contents', 'The table of contents is kept as a read-only block; its page numbers refresh when the file is updated in a desktop editor.')
-            out.push(opaqueBlock(c, 'Table of contents', ctx))
+            ctx.report.add('preserved', 'Table of contents', 'The table of contents is kept exactly as it is until you choose References → Update table, which rebuilds it from the headings.')
+            out.push(tocBlock(c))
           } else if (gallery && /bibliograph/i.test(gallery)) {
             const paras = descendants(c, NS.w, 'p').map((p) => textContent(p).trim()).filter(Boolean)
             const headed = descendants(c, NS.w, 'pStyle').some((st) => /heading/i.test(wVal(st) ?? ''))
@@ -224,6 +224,34 @@ async function convertBlocks(container: Element, ctx: Ctx): Promise<PMNode[]> {
     out.push(opaqueBlock(c, c.localName, ctx))
   }
   return buildLists(out, ctx)
+}
+
+/** Imported table of contents: entries are read for display; the original XML is kept for export. */
+function tocBlock(sdt: Element): PMNode {
+  const content = wChild(sdt, 'sdtContent')
+  const entries: { level: number; text: string; page: string }[] = []
+  let title = 'Contents'
+  const paras = content ? descendants(content, NS.w, 'p') : []
+  for (const p of paras) {
+    const style = wVal(wChild(wChild(p, 'pPr'), 'pStyle')) ?? ''
+    // visible text only (skip field instructions), split at the last tab into entry text and page number
+    let text = ''
+    for (const r of descendants(p, NS.w, 'r')) {
+      for (const k of children(r)) {
+        if (k.namespaceURI !== NS.w) continue
+        if (k.localName === 't') text += k.textContent ?? ''
+        else if (k.localName === 'tab') text += '\t'
+      }
+    }
+    const level = /TOC\s*([1-9])$/i.exec(style)?.[1] ?? /^TOC([1-9])$/i.exec(style)?.[1]
+    if (!level) {
+      if (text.trim() && !entries.length && /heading/i.test(style)) title = text.trim()
+      continue
+    }
+    const tab = text.lastIndexOf('\t')
+    entries.push({ level: Number(level), text: (tab >= 0 ? text.slice(0, tab) : text).replace(/\t/g, ' ').trim(), page: tab >= 0 ? text.slice(tab + 1).trim() : '' })
+  }
+  return { type: 'toc', attrs: { title, levels: Math.max(3, ...entries.map((e) => e.level)), entries, rawXml: serializeXml(sdt), updated: false } }
 }
 
 function opaqueBlock(e: Element, label: string, _ctx: Ctx): PMNode {
