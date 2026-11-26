@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { EditorContent, useEditor, type Editor } from '@tiptap/react'
 import { generateHTML } from '@tiptap/core'
 import Collaboration from '@tiptap/extension-collaboration'
@@ -7,6 +7,9 @@ import {
   ArrowLeft, Cloud, CloudOff, FileDown, History, Loader2, MessageSquare, PanelLeft, PenLine, Share2, Sparkles, SpellCheck2, Users, Footprints,
 } from 'lucide-react'
 import { nextNoteId } from '../docx/notes'
+
+// The DOCX engine (and its zip library) loads on first use: opening, exporting or merging a file.
+const docxEngine = () => Promise.all([import('../docx/export'), import('../docx/import'), import('../docx/validate')]).then(([e, i, v]) => ({ exportDocx: e.exportDocx, importDocx: i.importDocx, validatePackage: v.validatePackage }))
 import { Proofing } from '../features/grammar'
 import { mergeDocument } from '../features/merge'
 import { BIBLIOGRAPHY_TITLES, citationInstr, formatBibliography, formatCitation } from '../features/citations'
@@ -17,7 +20,15 @@ import { ommlToTree, toLinear } from '../objects/math'
 import { newChart } from '../objects/chart'
 import type { ObjectInfo } from '../model/extensions'
 import type { StyleDef } from '../model/types'
-import { ChartDialog, CustomXmlDialog, DrawDialog, EquationDialog, ShapeDialog, SmartArtDialog, TextBoxDialog } from './ObjectDialogs'
+// object dialogs (equations, charts, shapes, drawing…) load the first time one is opened
+const objectDialogs = () => import('./ObjectDialogs')
+const ChartDialog = lazy(() => objectDialogs().then((m) => ({ default: m.ChartDialog })))
+const CustomXmlDialog = lazy(() => objectDialogs().then((m) => ({ default: m.CustomXmlDialog })))
+const DrawDialog = lazy(() => objectDialogs().then((m) => ({ default: m.DrawDialog })))
+const EquationDialog = lazy(() => objectDialogs().then((m) => ({ default: m.EquationDialog })))
+const ShapeDialog = lazy(() => objectDialogs().then((m) => ({ default: m.ShapeDialog })))
+const SmartArtDialog = lazy(() => objectDialogs().then((m) => ({ default: m.SmartArtDialog })))
+const TextBoxDialog = lazy(() => objectDialogs().then((m) => ({ default: m.TextBoxDialog })))
 import { CitationDialog, MailMergePanel, ModifyStyleDialog, NotesPanel, ProofingPanel, SourcesDialog } from './FeatureUI'
 import { createDocument } from './docActions'
 import { api, type User } from '../api'
@@ -26,9 +37,6 @@ import { schemaExtensions, newId as newNodeId } from '../model/extensions'
 import { emptyMeta, migrateDocument, PAGE_SIZES, twipToPx, type DocMeta, type PMNode, type ScribeDocument } from '../model/types'
 import { Pagination, repaginate, type PageInfo } from '../layout/pagination'
 import { FindReplace, SectionSync, Suggesting, isSuggesting, setSuggesting } from '../editor/plugins'
-import { exportDocx } from '../docx/export'
-import { importDocx } from '../docx/import'
-import { validatePackage } from '../docx/validate'
 import { contentToText, documentToHtml, download, safeFilename, sanitizeHtml } from '../formats/formats'
 import { Ribbon, type RibbonAction } from './Ribbon'
 import { AiPanel, ChangesPanel, CommentsPanel, FindBar, PagesPanel, VersionsPanel } from './Panels'
@@ -360,6 +368,7 @@ function DocEditor({ docId, info, session, status, user, onUser, theme, onToggle
       d.meta = { ...d.meta, metadata: { ...d.meta.metadata, title, lastModifiedBy: user.name } }
       if (fmt === 'docx') {
         toast('Preparing DOCX…')
+        const { exportDocx, validatePackage } = await docxEngine()
         const { data, report } = await exportDocx(d, await fetchOriginal())
         const problems = await validatePackage(data)
         if (problems.length) {
@@ -522,7 +531,7 @@ function DocEditor({ docId, info, session, status, user, onUser, theme, onToggle
         return setDialog({ kind: 'shortcuts' })
       case 'report':
         fetchOriginal()
-          .then((b) => b && importDocx(b))
+          .then(async (b) => b && (await docxEngine()).importDocx(b))
           .then((r) => r && setDialog({ kind: 'report', issues: r.report, title: 'Compatibility report' }))
           .catch((e) => toast(e.message, 'error'))
         return
@@ -690,6 +699,7 @@ function DocEditor({ docId, info, session, status, user, onUser, theme, onToggle
     try {
       toast('Preparing merged DOCX…')
       const m = mergedDoc()
+      const { exportDocx, validatePackage } = await docxEngine()
       const { data } = await exportDocx({ version: 1, content: m.content, meta: { ...m.meta, metadata: { ...m.meta.metadata, title: `${title} (merged)`, lastModifiedBy: user.name } } }, await fetchOriginal())
       const problems = await validatePackage(data)
       if (problems.length) return toast(`Merge stopped: the DOCX failed a structural check (${problems[0]}).`, 'error')
@@ -890,7 +900,7 @@ function DocEditor({ docId, info, session, status, user, onUser, theme, onToggle
               ['ai', <Sparkles size={18} key="i" />, 'AI assistant'],
             ] as const
           ).map(([k, icon, label]) => (
-            <button key={k} className={`sc-btn ${panel === k ? 'is-active' : ''}`} aria-label={label} title={label} aria-pressed={panel === k} onClick={() => setPanel(panel === k ? null : k)}>
+            <button key={k} className={`sc-btn ${panel === k ? 'is-active' : ''}`} aria-label={label} title={label} aria-pressed={panel === k} onMouseDown={(e) => e.preventDefault()} onClick={() => setPanel(panel === k ? null : k)}>
               {icon}
             </button>
           ))}
@@ -1057,6 +1067,7 @@ function DocEditor({ docId, info, session, status, user, onUser, theme, onToggle
         />
       )}
       {dialog?.kind === 'account' && <AccountDialog user={user} onUser={onUser} onClose={() => setDialog(null)} />}
+      <Suspense fallback={null}>
       {dialog?.kind === 'object' && (() => {
         const node = editor.state.doc.nodeAt(dialog.pos)
         const close = () => setDialog(null)
@@ -1106,6 +1117,7 @@ function DocEditor({ docId, info, session, status, user, onUser, theme, onToggle
           }}
         />
       )}
+      </Suspense>
       {dialog?.kind === 'sources' && (
         <SourcesDialog
           sources={meta.sources ?? []}
@@ -1322,7 +1334,8 @@ function buildStyleCss(meta: DocMeta) {
   // a picture never grows past the text area of a page (the file keeps its real size)
   let css = `.sc-doc img{max-height:${Math.floor(twipToPx(pg.height - pg.marginTop - pg.marginBottom))}px;object-fit:contain}`
   css += `.sc-doc{font-family:"${esc(d.fontFamily)}",Calibri,Carlito,"Segoe UI",Arial,sans-serif;font-size:${d.fontSizePt}pt;line-height:${d.lineHeight}}`
-  for (const s of meta.styles) {
+  // the document's styles plus built-in gallery styles it doesn't define (Quote, Subtitle…)
+  for (const s of galleryStyles(meta)) {
     if (s.type !== 'paragraph') continue
     const r: string[] = []
     if (s.fontFamily) r.push(`font-family:"${esc(s.fontFamily)}",sans-serif`)
