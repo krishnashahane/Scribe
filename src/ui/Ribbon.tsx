@@ -7,7 +7,7 @@ import {
   RemoveFormatting, Ruler, Search, SeparatorHorizontal, Strikethrough, Subscript, Superscript, Table, Underline, Undo2, Ban,
   ZoomIn, ZoomOut, Moon, Sun, PanelLeft, Hash, Keyboard, FileWarning, Pilcrow, ClipboardPaste, Copy, Scissors, Paintbrush,
   AArrowUp, AArrowDown, Sigma, Shapes, PencilLine, TextCursorInput, Quote, BookOpen, Library, Users, SpellCheck2, FileCode2, SquarePen,
-  RefreshCw,
+  RefreshCw, ChartColumn,
 } from 'lucide-react'
 import { SHAPE_KINDS } from '../objects/shapes'
 import type { CitationStyle, DocMeta } from '../model/types'
@@ -27,7 +27,7 @@ export type RibbonAction =
   | 'image' | 'link' | 'bookmark' | 'comment' | 'pageSetup' | 'header' | 'footer' | 'sectionBreak' | 'find' | 'wordCount'
   | 'print' | 'shortcuts' | 'report' | 'toggleSuggest' | 'acceptAll' | 'rejectAll' | 'zoomIn' | 'zoomOut' | 'zoomReset'
   | 'theme' | 'panel' | 'pageNumber' | 'orientation' | 'margins-normal' | 'margins-narrow' | 'margins-wide' | 'size-A4' | 'size-Letter' | 'marks'
-  | 'formatPainter' | 'equation' | 'textbox' | 'draw' | `shape-${string}` | 'editObject' | 'citation' | 'sources' | 'bibliography'
+  | 'formatPainter' | 'chart' | 'equation' | 'textbox' | 'draw' | `shape-${string}` | 'editObject' | 'citation' | 'sources' | 'bibliography'
   | 'updateCitations' | `citationStyle-${CitationStyle}` | 'mailMerge' | 'mergeField' | 'proofing' | 'customXml' | 'newStyle'
 
 const TABS = ['Home', 'Insert', 'Layout', 'References', 'Mailings', 'Review', 'View'] as const
@@ -284,6 +284,7 @@ export function Ribbon(props: {
                 label={<span className="sc-menu-btn"><Shapes size={17} aria-hidden="true" /> Shapes</span>}
                 items={Object.entries(SHAPE_KINDS).map(([k, v]) => ({ label: v, onClick: () => onAction(`shape-${k}`), disabled: dis }))}
               />
+              <IconButton showLabel label="Chart" icon={<ChartColumn size={17} />} disabled={dis} onClick={() => onAction('chart')} />
               <IconButton showLabel label="Text box" icon={<TextCursorInput size={17} />} disabled={dis} onClick={() => onAction('textbox')} />
               <IconButton showLabel label="Draw" icon={<PencilLine size={17} />} disabled={dis} onClick={() => onAction('draw')} />
               <IconButton showLabel label="Equation" icon={<Sigma size={17} />} disabled={dis} onClick={() => onAction('equation')} />
