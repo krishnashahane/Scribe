@@ -1,8 +1,9 @@
-import { useMemo, useRef, useState } from 'react'
+import { useEffect, useEffectEvent, useMemo, useRef, useState } from 'react'
 import type { Editor } from '@tiptap/react'
 import { useEditorState } from '@tiptap/react'
 import { generateHTML } from '@tiptap/core'
-import { ChevronLeft, ChevronRight, FileDown, FilePlus2, Plus, SpellCheck2, Trash2, Upload, Users } from 'lucide-react'
+import { ChevronLeft, ChevronRight, FileDown, FilePlus2, Footprints, Plus, SpellCheck2, Trash2, Upload, Users } from 'lucide-react'
+import { TextSelection } from '@tiptap/pm/state'
 import { Dialog, useToast } from './kit'
 import type { CitationStyle, DocMeta, MailMergeData, PMNode, Source, SourcePerson, SourceType, StyleDef } from '../model/types'
 import { SOURCE_TYPES, formatCitation, formatEntry, newTag } from '../features/citations'
@@ -588,6 +589,103 @@ export function ModifyStyleDialog({ style, styles, isNew, onFromSelection, onSav
         </div>
       </div>
     </Dialog>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Footnotes and endnotes
+
+export function NotesPanel({ editor, meta, setMeta, labels, readOnly, focus, onFocused }: { editor: Editor; meta: DocMeta; setMeta: (f: (m: DocMeta) => DocMeta) => void; labels: Record<string, string>; readOnly: boolean; focus: string | null; onFocused: () => void }) {
+  const refs = useRef<Record<string, HTMLTextAreaElement | null>>({})
+  const focused = useEffectEvent(() => onFocused())
+  useEffect(() => {
+    if (!focus) return
+    const el = refs.current[focus]
+    if (!el) return
+    el.focus()
+    el.scrollIntoView({ block: 'nearest' })
+    focused()
+    // labels: the note's text box appears once its reference has been numbered
+  }, [focus, labels])
+  const kinds = [
+    ['footnote', 'Footnotes', meta.footnotes],
+    ['endnote', 'Endnotes', meta.endnotes],
+  ] as const
+  // labels are assigned in document order, so the key order of `labels` is reading order
+  const order = (kind: string, id: string) => {
+    const i = Object.keys(labels).filter((k) => k.startsWith(kind + ':')).indexOf(`${kind}:${id}`)
+    return i === -1 ? 1e9 : i
+  }
+  const setText = (kind: 'footnote' | 'endnote', id: string, text: string) =>
+    setMeta((m) => {
+      const upd = (l: typeof m.footnotes) => l.map((n) => (n.id === id ? { ...n, text, edited: true } : n))
+      return kind === 'footnote' ? { ...m, footnotes: upd(m.footnotes) } : { ...m, endnotes: upd(m.endnotes) }
+    })
+  const refPositions = (kind: string, id: string) => {
+    const out: number[] = []
+    editor.state.doc.descendants((n, pos) => {
+      if (n.type.name === 'noteRef' && String(n.attrs.noteId) === id && (n.attrs.kind === 'endnote' ? 'endnote' : 'footnote') === kind) out.push(pos)
+    })
+    return out
+  }
+  const goTo = (kind: string, id: string) => {
+    const pos = refPositions(kind, id)[0]
+    if (pos === undefined) return
+    editor.view.dispatch(editor.state.tr.setSelection(TextSelection.create(editor.state.doc, pos + 1)).scrollIntoView())
+    editor.commands.focus()
+  }
+  const remove = (kind: 'footnote' | 'endnote', id: string) => {
+    const tr = editor.state.tr
+    for (const pos of refPositions(kind, id).reverse()) tr.delete(pos, pos + 1)
+    if (tr.docChanged) editor.view.dispatch(tr)
+    setMeta((m) => (kind === 'footnote' ? { ...m, footnotes: m.footnotes.filter((n) => n.id !== id) } : { ...m, endnotes: m.endnotes.filter((n) => n.id !== id) }))
+  }
+  return (
+    <div className="sc-panel-body">
+      <h3>
+        <Footprints size={16} aria-hidden="true" /> Footnotes and endnotes
+      </h3>
+      <p className="sc-muted">Insert them from References (footnote {'⌘/Ctrl+Alt+F'}, endnote {'⌘/Ctrl+Alt+D'}). Numbers follow the order of the references.</p>
+      {kinds.map(([kind, title, list]) => {
+        const shown = list.filter((n) => labels[`${kind}:${n.id}`]).sort((a, b) => order(kind, a.id) - order(kind, b.id))
+        return (
+          <section key={kind} className="sc-notes-section">
+            <h4>
+              {title} <span className="sc-chip-ui">{shown.length}</span>
+            </h4>
+            {!shown.length ? (
+              <p className="sc-muted">None yet.</p>
+            ) : (
+              <ol className="sc-note-list">
+                {shown.map((n) => (
+                  <li key={n.id}>
+                    <button className="sc-note-num" onClick={() => goTo(kind, n.id)} title="Go to the reference" aria-label={`Go to ${kind} ${labels[`${kind}:${n.id}`]}`}>
+                      {labels[`${kind}:${n.id}`]}
+                    </button>
+                    <textarea
+                      ref={(el) => {
+                        refs.current[`${kind}:${n.id}`] = el
+                      }}
+                      aria-label={`${kind === 'footnote' ? 'Footnote' : 'Endnote'} ${labels[`${kind}:${n.id}`]} text`}
+                      rows={2}
+                      value={n.text}
+                      readOnly={readOnly}
+                      placeholder="Type the note…"
+                      onChange={(e) => setText(kind, n.id, e.target.value)}
+                    />
+                    {!readOnly && (
+                      <button className="sc-icon-mini" aria-label={`Delete ${kind} ${labels[`${kind}:${n.id}`]}`} title="Delete note and its reference" onClick={() => remove(kind, n.id)}>
+                        <Trash2 size={13} />
+                      </button>
+                    )}
+                  </li>
+                ))}
+              </ol>
+            )}
+          </section>
+        )
+      })}
+    </div>
   )
 }
 
