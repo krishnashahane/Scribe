@@ -277,3 +277,38 @@ describe('section columns', () => {
     expect(one.back.doc.meta.sections[0].columns).toBeUndefined()
   })
 })
+
+describe('table of contents', () => {
+  it('writes a TOC field in a contents control with entry styles, and reads it back', async () => {
+    const entries = [
+      { level: 1, text: 'Introduction', page: '1' },
+      { level: 2, text: 'Scope & aims', page: '2' },
+      { level: 1, text: 'Results', page: '3' },
+    ]
+    const d = doc([{ type: 'toc', attrs: { title: 'Contents', levels: 3, entries, updated: true } }, { type: 'heading', attrs: { level: 1 }, content: [{ type: 'text', text: 'Introduction' }] }])
+    const { back, data } = await roundTrip(d, undefined, 'toc-new.docx')
+    const toc = find(back.doc.content, (n) => n.type === 'toc')[0]
+    expect(toc.attrs!.entries).toEqual(entries)
+    expect(toc.attrs!.title).toBe('Contents')
+    const zip = await JSZip.loadAsync(data)
+    const xml = await zip.file('word/document.xml')!.async('string')
+    expect(xml).toContain('TOC \\o "1-3" \\h \\z \\u')
+    expect(xml).toContain('<w:docPartGallery w:val="Table of Contents"/>')
+    const styles = await zip.file('word/styles.xml')!.async('string')
+    for (const id of ['TOC1', 'TOC2', 'TOCHeading']) expect(styles).toContain(`w:styleId="${id}"`)
+  })
+
+  it('keeps an imported table of contents unchanged until it is updated', async () => {
+    const original = fx('toc.docx')
+    const r = await importDocx(original)
+    const toc = find(r.doc.content, (n) => n.type === 'toc')[0]
+    expect(toc).toBeTruthy()
+    const { data } = await exportDocx(r.doc, original)
+    const sdt = (x: string) => /<w:sdt>[\s\S]*?<\/w:sdt>/.exec(x)?.[0]
+    const a = await (await JSZip.loadAsync(original)).file('word/document.xml')!.async('string')
+    const b = await (await JSZip.loadAsync(data)).file('word/document.xml')!.async('string')
+    // same XML (namespace declarations and the &quot; text escape are equivalent)
+    const norm = (x?: string) => x?.replace(/\s+xmlns:\w+="[^"]*"/g, '').replace(/&quot;/g, '"')
+    expect(norm(sdt(b))).toBe(norm(sdt(a)))
+  })
+})
