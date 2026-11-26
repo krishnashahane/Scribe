@@ -7,7 +7,7 @@ import {
   RemoveFormatting, Ruler, Search, SeparatorHorizontal, Strikethrough, Subscript, Superscript, Table, Underline, Undo2, Ban,
   ZoomIn, ZoomOut, Moon, Sun, PanelLeft, Hash, Keyboard, FileWarning, Pilcrow, ClipboardPaste, Copy, Scissors, Paintbrush,
   AArrowUp, AArrowDown, Sigma, Shapes, PencilLine, TextCursorInput, Quote, BookOpen, Library, Users, SpellCheck2, FileCode2, SquarePen,
-  RefreshCw, ChartColumn,
+  RefreshCw, ChartColumn, Footprints, NotebookPen, Columns3,
 } from 'lucide-react'
 import { SHAPE_KINDS } from '../objects/shapes'
 import type { CitationStyle, DocMeta } from '../model/types'
@@ -27,7 +27,7 @@ export type RibbonAction =
   | 'image' | 'link' | 'bookmark' | 'comment' | 'pageSetup' | 'header' | 'footer' | 'sectionBreak' | 'find' | 'wordCount'
   | 'print' | 'shortcuts' | 'report' | 'toggleSuggest' | 'acceptAll' | 'rejectAll' | 'zoomIn' | 'zoomOut' | 'zoomReset'
   | 'theme' | 'panel' | 'pageNumber' | 'orientation' | 'margins-normal' | 'margins-narrow' | 'margins-wide' | 'size-A4' | 'size-Letter' | 'marks'
-  | 'formatPainter' | 'chart' | 'equation' | 'textbox' | 'draw' | `shape-${string}` | 'editObject' | 'citation' | 'sources' | 'bibliography'
+  | 'formatPainter' | 'columns-1' | 'columns-2' | 'columns-3' | 'chart' | 'footnote' | 'endnote' | 'equation' | 'textbox' | 'draw' | `shape-${string}` | 'editObject' | 'citation' | 'sources' | 'bibliography'
   | 'updateCitations' | `citationStyle-${CitationStyle}` | 'mailMerge' | 'mergeField' | 'proofing' | 'customXml' | 'newStyle'
 
 const TABS = ['Home', 'Insert', 'Layout', 'References', 'Mailings', 'Review', 'View'] as const
@@ -315,6 +315,18 @@ export function Ribbon(props: {
               <button className="sc-text-btn" disabled={dis} onClick={() => onAction('margins-wide')}>Wide</button>
             </div>
             <div className="sc-group">
+              <Menu
+                align="left"
+                ariaLabel="Columns"
+                label={<span className="sc-menu-btn"><Columns3 size={17} aria-hidden="true" /> Columns</span>}
+                items={[
+                  { label: 'One column', onClick: () => onAction('columns-1'), disabled: dis },
+                  { label: 'Two columns', onClick: () => onAction('columns-2'), disabled: dis },
+                  { label: 'Three columns', onClick: () => onAction('columns-3'), disabled: dis },
+                ]}
+              />
+            </div>
+            <div className="sc-group">
               <button className="sc-text-btn" disabled={dis} onClick={() => onAction('header')}>Edit header</button>
               <button className="sc-text-btn" disabled={dis} onClick={() => onAction('footer')}>Edit footer</button>
             </div>
@@ -333,6 +345,10 @@ export function Ribbon(props: {
                   <option value="Chicago">Chicago (author-date)</option>
                 </select>
               </label>
+            </div>
+            <div className="sc-group" aria-label="Footnotes">
+              <IconButton showLabel label="Insert footnote" shortcut={`${mod}Alt+F`} icon={<Footprints size={17} />} disabled={dis} onClick={() => onAction('footnote')} />
+              <IconButton showLabel label="Insert endnote" shortcut={`${mod}Alt+D`} icon={<NotebookPen size={17} />} disabled={dis} onClick={() => onAction('endnote')} />
             </div>
             <div className="sc-group" aria-label="Bibliography">
               <IconButton showLabel label="Bibliography" icon={<BookOpen size={17} />} disabled={dis} onClick={() => onAction('bibliography')} />
