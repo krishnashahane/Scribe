@@ -73,6 +73,18 @@ interface Unit {
   rowCols?: number
   /** table row: position of its table */
   tablePos?: number
+  /** position of the top-level block that contains this unit */
+  topPos: number
+  /** column count of the unit's section (> 1: laid out in columns, whole blocks per column) */
+  columns: number
+}
+
+/** px between columns (DOCX default w:space = 720 twips) */
+export const COLUMN_GAP = 48
+
+export function columnWidth(sec: SectionProps | undefined, n: number) {
+  const g = pageGeom(sec)
+  return (g.width - g.marginLeft - g.marginRight - COLUMN_GAP * (n - 1)) / n
 }
 
 function pageGeom(sec: SectionProps | undefined) {
@@ -89,21 +101,29 @@ function pageGeom(sec: SectionProps | undefined) {
   }
 }
 
-function collectUnits(doc: PMNode): Unit[] {
+function collectUnits(doc: PMNode, sections: SectionProps[]): Unit[] {
   const units: Unit[] = []
   let section = 0
   let breakNext = false
   doc.forEach((node, offset) => {
+    const topPos = offset
     const visit = (n: PMNode, pos: number) => {
+      const columns = Math.max(1, Math.min(4, sections[section]?.columns ?? 1))
       if (n.type.name === 'pageBreak') {
         breakNext = true
-        units.push({ pos, node: n, textblock: false, section, forceBreakBefore: false })
+        units.push({ pos, node: n, textblock: false, section, forceBreakBefore: false, topPos, columns: 1 })
         return
       }
       if (n.type.name === 'sectionBreak') {
-        units.push({ pos, node: n, textblock: false, section, forceBreakBefore: false })
+        units.push({ pos, node: n, textblock: false, section, forceBreakBefore: false, topPos, columns: 1 })
         section = Number(n.attrs.section ?? section) + 1
         if (n.attrs.breakType !== 'continuous') breakNext = true
+        return
+      }
+      // column sections: whole top-level blocks flow from column to column
+      if (columns > 1 && pos === topPos) {
+        units.push({ pos, node: n, textblock: false, section, forceBreakBefore: breakNext || !!n.attrs?.pageBreakBefore, topPos, columns })
+        breakNext = false
         return
       }
       if (n.type.name === 'table') {
@@ -112,13 +132,13 @@ function collectUnits(doc: PMNode): Unit[] {
         let cols = 0
         first?.forEach((cell) => (cols += Number(cell.attrs.colspan) || 1))
         n.forEach((row, o) => {
-          units.push({ pos: pos + 1 + o, node: row, textblock: false, section, forceBreakBefore: o === 0 && breakNext, rowCols: Math.max(1, cols), tablePos: pos })
+          units.push({ pos: pos + 1 + o, node: row, textblock: false, section, forceBreakBefore: o === 0 && breakNext, rowCols: Math.max(1, cols), tablePos: pos, topPos, columns: 1 })
         })
         breakNext = false
         return
       }
       if (n.isTextblock || n.isAtom || n.type.name === 'horizontalRule') {
-        units.push({ pos, node: n, textblock: n.isTextblock, section, forceBreakBefore: breakNext || !!n.attrs?.pageBreakBefore })
+        units.push({ pos, node: n, textblock: n.isTextblock, section, forceBreakBefore: breakNext || !!n.attrs?.pageBreakBefore, topPos, columns: 1 })
         breakNext = false
         return
       }
@@ -159,7 +179,7 @@ export function computeLayout(view: EditorView, opts: PaginationOptions): { deco
   const sections = opts.getSections()
   const gap = opts.getGap()
   const scale = opts.getScale() || 1
-  const units = collectUnits(view.state.doc)
+  const units = collectUnits(view.state.doc, sections)
   const root = view.dom as HTMLElement
   const originClient = root.getBoundingClientRect().top + (parseFloat(getComputedStyle(root).paddingTop) || 0) * scale
   /** client px → unscaled layout px relative to the content box (without spacers) */
@@ -198,6 +218,17 @@ export function computeLayout(view: EditorView, opts: PaginationOptions): { deco
   let lastBottom = 0
   const decos: Decoration[] = []
   let offset = 0
+  // Columns: blocks after the first column of a page are drawn shifted up (and right) with
+  // relative positioning. `shift` is how far the drawn layout sits above the document flow;
+  // it carries over to every following block so the rest of the document lines up.
+  let shift = 0
+  let col: { section: number; page: PageInfo; c: number; colTop: number; maxBottom: number } | null = null
+  const placed = new Map<number, { top: number; left: number; node: PMNode }>()
+  const place = (u: Unit, left = 0) => {
+    if (!shift && !left) return
+    const n = view.state.doc.nodeAt(u.topPos)
+    if (n && !placed.has(u.topPos)) placed.set(u.topPos, { top: -shift, left, node: n })
+  }
 
   for (const u of units) {
     if (u.node.type.name === 'pageBreak' || u.node.type.name === 'sectionBreak') continue
@@ -205,8 +236,18 @@ export function computeLayout(view: EditorView, opts: PaginationOptions): { deco
     if (!dom || !(dom instanceof HTMLElement)) continue
     const rect = dom.getBoundingClientRect()
     if (!rect.height && !rect.width) continue
-    let top = toLayout(rect.top) + offset
-    let bottom = toLayout(rect.bottom) + offset
+    let top = toLayout(rect.top) + offset - shift
+    let bottom = toLayout(rect.bottom) + offset - shift
+    // leaving a column section: continue below the tallest column
+    if (col && (u.columns <= 1 || u.section !== col.section)) {
+      const d = col.page === page ? col.maxBottom - top : 0
+      if (d > 0) {
+        shift -= d
+        top += d
+        bottom += d
+      }
+      col = null
+    }
     // section width differs from the first section (e.g. landscape) → widen the block
     const sec = sections[u.section]
     if (sec && u.section !== 0) {
@@ -235,6 +276,35 @@ export function computeLayout(view: EditorView, opts: PaginationOptions): { deco
         bottom += h
       }
     }
+    if (u.columns > 1) {
+      const n = u.columns
+      const colW = columnWidth(sec, n)
+      if (!col || col.section !== u.section || col.page !== page) col = { section: u.section, page, c: 0, colTop: Math.max(top, contentTop(page)), maxBottom: top }
+      // a block that doesn't fit moves to the next column, then to the next page
+      while (bottom > contentBottom(page) + 0.5 && top > col.colTop + 0.5) {
+        if (col.c < n - 1) {
+          col.c++
+          const d = top - col.colTop
+          shift += d
+          top -= d
+          bottom -= d
+        } else {
+          newPageFor(u.section)
+          const h = contentTop(page) - top
+          decos.push(Decoration.widget(u.pos, spacer(h, 'block', page.index), { side: -1, key: `pc-${u.pos}-${Math.round(h)}`, ignoreSelection: true }))
+          offset += h
+          top += h
+          bottom += h
+          col = { section: u.section, page, c: 0, colTop: contentTop(page), maxBottom: top }
+        }
+      }
+      col.maxBottom = Math.max(col.maxBottom, bottom)
+      place(u, col.c * (colW + COLUMN_GAP))
+      for (const [, id] of refs) reserve(page, id)
+      lastBottom = Math.max(lastBottom, bottom)
+      continue
+    }
+    place(u)
     refPage = page
     for (const [, id] of refs) reserve(page, id)
     // overflow: move or split
@@ -289,7 +359,17 @@ export function computeLayout(view: EditorView, opts: PaginationOptions): { deco
         bottom += h
       }
     }
-    lastBottom = bottom
+    lastBottom = Math.max(lastBottom, bottom)
+  }
+  if (col) lastBottom = Math.max(lastBottom, col.maxBottom)
+  for (const [pos, p] of placed) decos.push(Decoration.node(pos, pos + p.node.nodeSize, { style: `position:relative;top:${p.top.toFixed(1)}px;left:${p.left.toFixed(1)}px` }))
+  // the drawn layout is shorter than the flow by `shift`: trim the editor so it doesn't scroll past the last page
+  if (shift > 0) {
+    const last = view.state.doc.lastChild
+    if (last) {
+      const pos = view.state.doc.content.size - last.nodeSize
+      decos.push(Decoration.node(pos, pos + last.nodeSize, { style: `margin-bottom:${(-shift).toFixed(1)}px` }))
+    }
   }
   // endnotes follow the last block, on a new page when they don't fit
   const endH = opts.getEndnotesHeight?.() ?? 0
@@ -348,7 +428,29 @@ export const Pagination = Extension.create<PaginationOptions>({
     const opts = this.options
     let timer: ReturnType<typeof setTimeout> | null = null
     let lastSig = ''
+    // blocks in multi-column sections are set to the column width before they are measured
+    let widthCache: { doc: PMNode; sig: string; set: DecorationSet } | null = null
+    const columnWidths = (doc: PMNode) => {
+      const sections = opts.getSections()
+      const sig = JSON.stringify(sections.map((x) => [x.columns ?? 1, x.page.width, x.page.marginLeft, x.page.marginRight]))
+      if (widthCache && widthCache.doc === doc && widthCache.sig === sig) return widthCache.set
+      const decos: Decoration[] = []
+      if (sections.some((x) => (x.columns ?? 1) > 1)) {
+        let section = 0
+        doc.forEach((node, pos) => {
+          if (node.type.name === 'sectionBreak') {
+            section = Number(node.attrs.section ?? section) + 1
+            return
+          }
+          const n = Math.max(1, Math.min(4, sections[section]?.columns ?? 1))
+          if (n > 1 && node.type.name !== 'pageBreak') decos.push(Decoration.node(pos, pos + node.nodeSize, { style: `width:${columnWidth(sections[section], n).toFixed(1)}px;max-width:none;box-sizing:border-box` }))
+        })
+      }
+      widthCache = { doc, sig, set: DecorationSet.create(doc, decos) }
+      return widthCache.set
+    }
     return [
+      new Plugin({ key: new PluginKey('scribe-column-widths'), props: { decorations: (state) => columnWidths(state.doc) } }),
       new Plugin<DecorationSet>({
         key,
         state: {
