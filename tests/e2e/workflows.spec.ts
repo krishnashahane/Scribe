@@ -417,3 +417,58 @@ test('two-column sections are laid out side by side and stay editable', async ({
   await page.keyboard.type('Edited ')
   await expect(p30).toContainText('Edited Paragraph 30.')
 })
+
+test('table of contents lists headings with page numbers, jumps to them, and symbols insert', async ({ page }) => {
+  await page.goto('/')
+  await expect(body(page)).toBeVisible({ timeout: 20000 })
+  const before = page.url()
+  await page.getByRole('button', { name: 'File menu' }).click()
+  await page.getByRole('menuitem', { name: /New blank document/ }).click()
+  await expect(page).not.toHaveURL(before, { timeout: 20000 })
+  await body(page).click()
+  await page.keyboard.press('Enter')
+  for (const [i, title] of ['Introduction', 'Method', 'Results'].entries()) {
+    await page.keyboard.type(title)
+    await page.keyboard.press('ControlOrMeta+Alt+1')
+    await page.keyboard.press('Enter')
+    for (let k = 0; k < (i === 0 ? 40 : 4); k++) {
+      await page.keyboard.type(`Body text ${k}.`)
+      await page.keyboard.press('Enter')
+    }
+  }
+  // insert the table at the top
+  await body(page).locator(':scope > p').first().click()
+  await page.keyboard.press('ControlOrMeta+Home')
+  await page.getByRole('tab', { name: 'References' }).click()
+  await page.getByRole('button', { name: 'Table of contents' }).click()
+  const toc = page.locator('.sc-doc .sc-toc')
+  await expect(toc.locator('.sc-toc-text')).toHaveText(['Introduction', 'Method', 'Results'])
+  // Introduction is on page 1; the long body text pushes Method to page 2
+  await expect.poll(async () => toc.locator('.sc-toc-page').allTextContents()).toEqual(['1', '2', '2'])
+  await toc.locator('.sc-toc-entry', { hasText: 'Results' }).click()
+  await expect.poll(async () => page.evaluate(() => window.getSelection()?.anchorNode?.parentElement?.closest('h1')?.textContent)).toBe('Results')
+  // symbol picker: inserts at the cursor (the start of the heading after the jump)
+  await page.getByRole('tab', { name: 'Insert' }).click()
+  await page.getByRole('button', { name: 'Symbol', exact: true }).click()
+  await page.getByRole('tab', { name: 'Currency' }).click()
+  await page.getByRole('button', { name: /^€ \(U\+20AC\)$/ }).click()
+  await page.getByRole('button', { name: 'Done' }).click()
+  await expect(body(page).locator('h1', { hasText: '€Results' })).toBeVisible()
+})
+
+test('command search finds and runs actions', async ({ page }) => {
+  await page.goto('/')
+  await expect(body(page)).toBeVisible({ timeout: 20000 })
+  await body(page).click()
+  await page.keyboard.press('ControlOrMeta+Shift+p')
+  const input = page.getByRole('combobox', { name: 'Search commands' })
+  await input.fill('symbol')
+  await page.keyboard.press('Enter')
+  await expect(page.getByRole('dialog', { name: 'Insert symbol' })).toBeVisible()
+  await page.keyboard.press('Escape')
+  await page.getByRole('button', { name: 'Search commands' }).click()
+  await input.fill('two col')
+  await expect(page.getByRole('option', { name: /Two columns/ })).toBeVisible()
+  await page.keyboard.press('Escape')
+  await expect(input).toHaveCount(0)
+})
