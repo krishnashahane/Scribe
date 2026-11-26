@@ -24,6 +24,94 @@ export interface ChartData {
   reason?: string
   /** set when the data was changed in SCRIBE; the exporter rewrites the part */
   dirty?: boolean
+  /** created in SCRIBE: the exporter writes a new chart part (part is empty until then) */
+  isNew?: boolean
+}
+
+export const NEW_CHART_SAMPLE: Pick<ChartData, 'categories' | 'series'> = {
+  categories: ['Q1', 'Q2', 'Q3', 'Q4'],
+  series: [
+    { name: 'Series 1', values: [4.3, 2.5, 3.5, 4.5] },
+    { name: 'Series 2', values: [2.4, 4.4, 1.8, 2.8] },
+  ],
+}
+
+export function newChart(kind: ChartKind): ChartData {
+  const pie = kind === 'pie' || kind === 'doughnut'
+  return {
+    part: '',
+    kind,
+    title: 'Chart title',
+    categories: [...NEW_CHART_SAMPLE.categories],
+    series: (pie ? NEW_CHART_SAMPLE.series.slice(0, 1) : NEW_CHART_SAMPLE.series).map((x) => ({ ...x, values: [...x.values] })),
+    editable: true,
+    isNew: true,
+    dirty: true,
+  }
+}
+
+/** Explicit slice colour: readers without chart style parts draw uncoloured slices otherwise. */
+function dPtXml(k: number) {
+  const col = CHART_COLORS[k % 8].slice(1).toUpperCase()
+  return `<c:dPt><c:idx val="${k}"/><c:bubble3D val="0"/><c:spPr><a:solidFill><a:srgbClr val="${col}"/></a:solidFill><a:ln w="12700"><a:solidFill><a:srgbClr val="FFFFFF"/></a:solidFill></a:ln></c:spPr></c:dPt>`
+}
+
+/** A complete chart part for a chart created in SCRIBE. */
+export function newChartXml(d: ChartData): string {
+  const esc = (v: string) => v.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;')
+  const lit = (tag: 'strLit' | 'numLit', vals: (string | number | null)[]) =>
+    `<c:${tag}>${tag === 'numLit' ? '<c:formatCode>General</c:formatCode>' : ''}<c:ptCount val="${vals.length}"/>${vals
+      .map((v, i) => (v === null || v === '' ? '' : `<c:pt idx="${i}"><c:v>${esc(String(v))}</c:v></c:pt>`))
+      .join('')}</c:${tag}>`
+  const pie = d.kind === 'pie' || d.kind === 'doughnut'
+  const sers = d.series
+    .map(
+      (s, i) =>
+        `<c:ser><c:idx val="${i}"/><c:order val="${i}"/><c:tx><c:v>${esc(s.name)}</c:v></c:tx>` +
+        (pie ? '' : `<c:spPr><a:solidFill><a:srgbClr val="${CHART_COLORS[i % 8].slice(1).toUpperCase()}"/></a:solidFill>${d.kind === 'line' ? '<a:ln w="28575"><a:solidFill><a:srgbClr val="' + CHART_COLORS[i % 8].slice(1).toUpperCase() + '"/></a:solidFill></a:ln>' : ''}</c:spPr>`) +
+        (d.kind === 'column' || d.kind === 'bar' ? '<c:invertIfNegative val="0"/>' : '') +
+        (pie ? d.categories.map((_, k) => dPtXml(k)).join('') : '') +
+        (d.kind === 'line' ? `<c:marker><c:symbol val="circle"/><c:size val="6"/><c:spPr><a:solidFill><a:srgbClr val="${CHART_COLORS[i % 8].slice(1).toUpperCase()}"/></a:solidFill></c:spPr></c:marker>` : '') +
+        `<c:cat>${lit('strLit', d.categories)}</c:cat><c:val>${lit('numLit', s.values)}</c:val>` +
+        (d.kind === 'line' ? '<c:smooth val="0"/>' : '') +
+        `</c:ser>`,
+    )
+    .join('')
+  const axes = '<c:axId val="50010001"/><c:axId val="50010002"/>'
+  let group: string
+  if (d.kind === 'column' || d.kind === 'bar')
+    group = `<c:barChart><c:barDir val="${d.kind === 'bar' ? 'bar' : 'col'}"/><c:grouping val="clustered"/><c:varyColors val="0"/>${sers}<c:gapWidth val="150"/>${axes}</c:barChart>`
+  else if (d.kind === 'line') group = `<c:lineChart><c:grouping val="standard"/><c:varyColors val="0"/>${sers}<c:marker val="1"/>${axes}</c:lineChart>`
+  else if (d.kind === 'area') group = `<c:areaChart><c:grouping val="standard"/><c:varyColors val="0"/>${sers}${axes}</c:areaChart>`
+  else if (d.kind === 'pie') group = `<c:pieChart><c:varyColors val="1"/>${sers}<c:firstSliceAng val="0"/></c:pieChart>`
+  else group = `<c:doughnutChart><c:varyColors val="1"/>${sers}<c:firstSliceAng val="0"/><c:holeSize val="50"/></c:doughnutChart>`
+  const catPos = d.kind === 'bar' ? 'l' : 'b'
+  const valPos = d.kind === 'bar' ? 'b' : 'l'
+  const axXml = pie
+    ? ''
+    : `<c:catAx><c:axId val="50010001"/><c:scaling><c:orientation val="minMax"/></c:scaling><c:delete val="0"/><c:axPos val="${catPos}"/><c:numFmt formatCode="General" sourceLinked="0"/><c:majorTickMark val="none"/><c:minorTickMark val="none"/><c:tickLblPos val="nextTo"/><c:crossAx val="50010002"/><c:crosses val="autoZero"/><c:auto val="1"/><c:lblAlgn val="ctr"/><c:lblOffset val="100"/><c:noMultiLvlLbl val="0"/></c:catAx>` +
+      `<c:valAx><c:axId val="50010002"/><c:scaling><c:orientation val="minMax"/></c:scaling><c:delete val="0"/><c:axPos val="${valPos}"/><c:majorGridlines><c:spPr><a:ln w="9525"><a:solidFill><a:srgbClr val="D9D9D9"/></a:solidFill></a:ln></c:spPr></c:majorGridlines><c:numFmt formatCode="General" sourceLinked="0"/><c:majorTickMark val="none"/><c:minorTickMark val="none"/><c:tickLblPos val="nextTo"/><c:crossAx val="50010001"/><c:crosses val="autoZero"/><c:crossBetween val="between"/></c:valAx>`
+  const title = d.title.trim()
+    ? `<c:title><c:tx><c:rich><a:bodyPr/><a:lstStyle/>${d.title
+        .split('\n')
+        .map((l) => `<a:p><a:pPr><a:defRPr sz="1400" b="1"/></a:pPr><a:r><a:rPr lang="en-US" sz="1400" b="1"/><a:t>${esc(l)}</a:t></a:r></a:p>`)
+        .join('')}</c:rich></c:tx><c:overlay val="0"/></c:title><c:autoTitleDeleted val="0"/>`
+    : '<c:autoTitleDeleted val="1"/>'
+  return (
+    `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<c:chartSpace xmlns:c="${C_NS}" xmlns:a="${A_NS}" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">` +
+    `<c:roundedCorners val="0"/><c:chart>${title}<c:plotArea><c:layout/>${group}${axXml}</c:plotArea><c:legend><c:legendPos val="b"/><c:overlay val="0"/></c:legend><c:plotVisOnly val="1"/><c:dispBlanksAs val="gap"/></c:chart>` +
+    `<c:spPr><a:solidFill><a:srgbClr val="FFFFFF"/></a:solidFill><a:ln><a:noFill/></a:ln></c:spPr></c:chartSpace>`
+  )
+}
+
+/** Inline drawing run that places a chart part (by relationship id) in the text. */
+export function chartRunXml(rid: string, id: number, widthPx: number, heightPx: number, rPr = ''): string {
+  const cx = Math.max(1, Math.round(widthPx * 9525))
+  const cy = Math.max(1, Math.round(heightPx * 9525))
+  return (
+    `<w:r>${rPr}<w:drawing><wp:inline distT="0" distB="0" distL="0" distR="0"><wp:extent cx="${cx}" cy="${cy}"/><wp:effectExtent l="0" t="0" r="0" b="0"/>` +
+    `<wp:docPr id="${id}" name="Chart ${id}"/><wp:cNvGraphicFramePr/><a:graphic><a:graphicData uri="${C_NS}"><c:chart xmlns:c="${C_NS}" r:id="${rid}"/></a:graphicData></a:graphic></wp:inline></w:drawing></w:r>`
+  )
 }
 
 const GROUPS: Record<string, ChartKind> = {
@@ -215,6 +303,19 @@ export function applyChart(xml: string, data: ChartData): string {
     else ser.insertBefore(nv, children(ser).find((k) => ['smooth', 'shape', 'extLst'].includes(k.localName)) ?? null)
   })
   for (const extra of existing.slice(data.series.length)) g.removeChild(extra)
+  // pie and doughnut slices added in SCRIBE get an explicit colour like the ones the file already had
+  if (g.localName.includes('ie') || g.localName === 'doughnutChart') {
+    for (const ser of cs(g, 'ser')) {
+      const have = new Set(cs(ser, 'dPt').map((p) => Number(val(c(p, 'idx')))))
+      if (!have.size && !c(ser, 'spPr')) continue
+      for (let k = 0; k < data.categories.length; k++) {
+        if (have.has(k)) continue
+        const frag = parseXml(`<x xmlns:c="${C_NS}" xmlns:a="${A_NS}">${dPtXml(k)}</x>`, 'dPt').documentElement.firstElementChild!
+        const anchor = c(ser, 'dLbls') ?? c(ser, 'cat') ?? c(ser, 'val')
+        ser.insertBefore(doc.importNode(frag, true), anchor)
+      }
+    }
+  }
   return serializeXml(doc.documentElement)
 }
 
