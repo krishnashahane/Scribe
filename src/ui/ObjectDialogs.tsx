@@ -149,6 +149,7 @@ export function TextBoxDialog({ xml, onSave, onClose }: { xml: string; onSave: (
 const KIND_LABEL: Record<ChartKind, string> = { column: 'Column', bar: 'Bar', line: 'Line', area: 'Area', pie: 'Pie', doughnut: 'Doughnut' }
 
 export function ChartDialog({ chart, onSave, onClose }: { chart: ChartData; onSave: (c: ChartData) => void; onClose: () => void }) {
+  const [kind, setKind] = useState<ChartKind>(chart.kind)
   const [title, setTitle] = useState(chart.title)
   const [cats, setCats] = useState(chart.categories.length ? chart.categories : ['Category 1'])
   const [series, setSeries] = useState(chart.series.length ? chart.series.map((s) => ({ name: s.name, values: s.values.map((v) => (v == null ? '' : String(v))) })) : [{ name: 'Series 1', values: [''] }])
@@ -157,6 +158,7 @@ export function ChartDialog({ chart, onSave, onClose }: { chart: ChartData; onSa
   const invalid = series.some((s) => s.values.some((v) => !numeric(v)))
   const data: ChartData = {
     ...chart,
+    kind,
     title,
     categories: cats,
     series: series.map((s) => ({ name: s.name, values: Array.from({ length: rows }, (_, i) => (s.values[i]?.trim() ? Number(s.values[i]) : null)) })),
@@ -171,9 +173,18 @@ export function ChartDialog({ chart, onSave, onClose }: { chart: ChartData; onSa
     )
   const setCell = (si: number, ri: number, v: string) => setSeries(series.map((s, k) => (k === si ? { ...s, values: Array.from({ length: rows }, (_, i) => (i === ri ? v : s.values[i] ?? '')) } : s)))
   return (
-    <Dialog title={`Edit ${KIND_LABEL[chart.kind].toLowerCase()} chart`} onClose={onClose} wide footer={<Footer onClose={onClose} onSave={() => onSave(data)} disabled={invalid} />}>
+    <Dialog title={chart.isNew ? 'Chart' : `Edit ${KIND_LABEL[chart.kind].toLowerCase()} chart`} onClose={onClose} wide footer={<Footer onClose={onClose} onSave={() => onSave(data)} disabled={invalid} label={chart.isNew && !chart.part ? 'Save chart' : 'Save'} />}>
       <div className="sc-chart-editor">
         <div className="sc-form">
+          {chart.isNew && (
+            <div className="sc-toggle-row" role="radiogroup" aria-label="Chart type">
+              {(Object.keys(KIND_LABEL) as ChartKind[]).map((k) => (
+                <button key={k} role="radio" aria-checked={kind === k} className={kind === k ? 'is-active' : ''} onClick={() => setKind(k)}>
+                  {KIND_LABEL[k]}
+                </button>
+              ))}
+            </div>
+          )}
           <label>
             Chart title
             <input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="No title" />
@@ -225,7 +236,7 @@ export function ChartDialog({ chart, onSave, onClose }: { chart: ChartData; onSa
             <button onClick={() => setCats([...cats, `Category ${cats.length + 1}`])}>
               <Plus size={14} /> Row
             </button>
-            {chart.kind !== 'pie' && chart.kind !== 'doughnut' && (
+            {kind !== 'pie' && kind !== 'doughnut' && (
               <button onClick={() => setSeries([...series, { name: `Series ${series.length + 1}`, values: Array(rows).fill('') }])}>
                 <Plus size={14} /> Series
               </button>
@@ -235,7 +246,7 @@ export function ChartDialog({ chart, onSave, onClose }: { chart: ChartData; onSa
         </div>
         <div className="sc-chart-preview" dangerouslySetInnerHTML={{ __html: chartSvg(data, 360, 240) }} />
       </div>
-      <p className="sc-muted">The chart keeps its type, colours and formatting. Edited values are saved inside the chart.</p>
+      <p className="sc-muted">{chart.isNew ? (kind === 'pie' || kind === 'doughnut' ? 'Pie and doughnut charts show the first series. ' : '') + 'The chart is saved as a real chart in DOCX files.' : 'The chart keeps its type, colours and formatting. Edited values are saved inside the chart.'}</p>
     </Dialog>
   )
 }
