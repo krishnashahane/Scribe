@@ -377,3 +377,43 @@ test('shapes, equations, citations, bibliography, proofing and mail merge work e
   expect(mjson).toContain('Dear Ada')
   expect(mjson).toContain('Dear Grace')
 })
+
+test('two-column sections are laid out side by side and stay editable', async ({ page }) => {
+  await page.goto('/')
+  await expect(body(page)).toBeVisible({ timeout: 20000 })
+  const before = page.url()
+  await page.getByRole('button', { name: 'File menu' }).click()
+  await page.getByRole('menuitem', { name: /New blank document/ }).click()
+  await expect(page).not.toHaveURL(before, { timeout: 20000 })
+  await body(page).click()
+  for (let i = 1; i <= 34; i++) {
+    await page.keyboard.type(`Paragraph ${i}. Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod tempor.`)
+    await page.keyboard.press('Enter')
+  }
+  await page.getByRole('tab', { name: 'Layout' }).click()
+  await page.getByRole('button', { name: 'Columns' }).click()
+  await page.getByRole('menuitem', { name: 'Two columns' }).click()
+  await expect(page.getByText('2 columns', { exact: true })).toBeVisible()
+  const first = body(page).locator(':scope > p', { hasText: 'Paragraph 1.' })
+  // the last paragraphs move into the second column, beside the first ones
+  await expect
+    .poll(async () => {
+      const a = await first.boundingBox()
+      const lefts = await body(page).locator(':scope > p').evaluateAll((ps) => ps.map((p) => Math.round(p.getBoundingClientRect().left)))
+      return a ? new Set(lefts).size : 0
+    })
+    .toBe(2)
+  const p1 = (await first.boundingBox())!
+  const later = body(page).locator(':scope > p').filter({ hasNot: page.locator('xx') })
+  const boxes = await later.evaluateAll((ps) => ps.map((p) => [p.getBoundingClientRect().left, p.getBoundingClientRect().top]))
+  const col2 = boxes.find(([l]) => l > p1.x + 50)!
+  expect(Math.abs(col2[1] - p1.y)).toBeLessThan(4) // column 2 starts level with column 1
+  // typing in the second column edits the right paragraph
+  const p30 = body(page).locator(':scope > p', { hasText: 'Paragraph 30.' })
+  await p30.scrollIntoViewIfNeeded()
+  const b30 = (await p30.boundingBox())!
+  await page.mouse.click(b30.x + 2, b30.y + 6)
+  await page.keyboard.press('Home')
+  await page.keyboard.type('Edited ')
+  await expect(p30).toContainText('Edited Paragraph 30.')
+})
