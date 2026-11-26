@@ -4,7 +4,7 @@ import { generateHTML } from '@tiptap/core'
 import Collaboration from '@tiptap/extension-collaboration'
 import CollaborationCaret from '@tiptap/extension-collaboration-caret'
 import {
-  ArrowLeft, Cloud, CloudOff, FileDown, History, Loader2, MessageSquare, PanelLeft, PenLine, Share2, Sparkles, SpellCheck2, Users, Footprints,
+  ArrowLeft, Cloud, CloudOff, FileDown, History, Loader2, MessageSquare, PanelLeft, PenLine, Share2, Sparkles, SpellCheck2, Users, Footprints, Search,
 } from 'lucide-react'
 import { nextNoteId } from '../docx/notes'
 
@@ -13,7 +13,8 @@ const docxEngine = () => Promise.all([import('../docx/export'), import('../docx/
 import { Proofing } from '../features/grammar'
 import { mergeDocument } from '../features/merge'
 import { BIBLIOGRAPHY_TITLES, citationInstr, formatBibliography, formatCitation } from '../features/citations'
-import { applyParagraphStyle, citedTags, refreshCitations, styleFromSelection } from '../features/docOps'
+import { applyParagraphStyle, citedTags, refreshCitations, styleFromSelection, tocEntries, updateTocs } from '../features/docOps'
+import { TextSelection } from '@tiptap/pm/state'
 import { galleryStyles, headingLevelOfStyle } from '../features/styles'
 import { DEFAULT_SHAPE, SHAPE_KINDS, type ShapeAttrs, type ShapeKind } from '../objects/shapes'
 import { ommlToTree, toLinear } from '../objects/math'
@@ -29,8 +30,11 @@ const EquationDialog = lazy(() => objectDialogs().then((m) => ({ default: m.Equa
 const ShapeDialog = lazy(() => objectDialogs().then((m) => ({ default: m.ShapeDialog })))
 const SmartArtDialog = lazy(() => objectDialogs().then((m) => ({ default: m.SmartArtDialog })))
 const TextBoxDialog = lazy(() => objectDialogs().then((m) => ({ default: m.TextBoxDialog })))
+const SymbolDialog = lazy(() => objectDialogs().then((m) => ({ default: m.SymbolDialog })))
 import { CitationDialog, MailMergePanel, ModifyStyleDialog, NotesPanel, ProofingPanel, SourcesDialog } from './FeatureUI'
 import { createDocument } from './docActions'
+import { CommandPalette, type Command } from './CommandPalette'
+import { SHAPE_KINDS as SHAPE_NAMES } from '../objects/shapes'
 import { api, type User } from '../api'
 import { openSession, userColor, type CollabSession, type SyncStatus } from '../collab/session'
 import { schemaExtensions, newId as newNodeId } from '../model/extensions'
@@ -63,6 +67,7 @@ type DialogState =
   | { kind: 'object'; pos: number }
   | { kind: 'equation' }
   | { kind: 'newChart' }
+  | { kind: 'symbol' }
   | { kind: 'newShape'; shape: ShapeAttrs }
   | { kind: 'draw' }
   | { kind: 'customXml' }
@@ -213,7 +218,10 @@ function DocEditor({ docId, info, session, status, user, onUser, theme, onToggle
           getSections: () => live.meta.sections,
           getGap: () => live.gap,
           getScale: () => live.zoom,
-          onLayout: setPages,
+          onLayout: (p) => {
+            live.setPages(p)
+            setPages(p)
+          },
           getNoteHeight: (id) => {
             const n = live.meta.footnotes.find((f) => f.id === id)
             return n ? measureNotes([{ label: '00', text: n.text }], contentWidth(live.meta)) : 0
@@ -247,6 +255,22 @@ function DocEditor({ docId, info, session, status, user, onUser, theme, onToggle
           return false
         },
         transformPastedHTML: (html) => sanitizeHtml(html),
+        // table of contents: clicking an entry goes to its heading
+        handleClickOn: (view, _pos, node, _nodePos, event) => {
+          if (node.type.name !== 'toc') return false
+          const target = (event.target as HTMLElement | null)?.closest('[data-toc-target]')?.getAttribute('data-toc-target')
+          if (!target) return false
+          let at = -1
+          view.state.doc.descendants((n, p) => {
+            if (at === -1 && n.type.name === 'heading' && n.attrs.nid === target) at = p
+            return at === -1
+          })
+          if (at === -1) return false
+          view.dispatch(view.state.tr.setSelection(TextSelection.create(view.state.doc, at + 1)))
+          ;(view.nodeDOM(at) as HTMLElement | null)?.scrollIntoView({ block: 'start', behavior: 'smooth' })
+          view.focus()
+          return true
+        },
         handleDoubleClickOn: (_view, _pos, node, nodePos) => {
           if (readOnly) return false
           if (node.type.name === 'shape' || (node.type.name === 'opaqueInline' && node.attrs.object)) {
@@ -271,6 +295,7 @@ function DocEditor({ docId, info, session, status, user, onUser, theme, onToggle
 
   const noteLabels = useNoteLabels(editor)
   const [focusNote, setFocusNote] = useState<string | null>(null)
+  const [palette, setPalette] = useState(false)
 
   // ---- autosave snapshot (content lives in Yjs; this snapshot feeds listings, exports on other devices and versions)
   const snapshot = useCallback((): ScribeDocument => ({ version: 1, content: editor!.getJSON() as PMNode, meta: live.meta }), [editor, live])
@@ -363,6 +388,8 @@ function DocEditor({ docId, info, session, status, user, onUser, theme, onToggle
   const exportAs = async (fmt: 'docx' | 'html' | 'txt' | 'pdf') => {
     if (!editor) return
     try {
+      // tables of contents made in SCRIBE always export with current page numbers
+      updateTocs(editor, live.pages, live.zoom, true)
       if (fmt === 'pdf') return printDoc()
       const d = snapshot()
       d.meta = { ...d.meta, metadata: { ...d.meta.metadata, title, lastModifiedBy: user.name } }
@@ -568,6 +595,16 @@ function DocEditor({ docId, info, session, status, user, onUser, theme, onToggle
       }
       case 'chart':
         return setDialog({ kind: 'newChart' })
+      case 'toc': {
+        editor.chain().focus().insertContent([{ type: 'toc', attrs: { title: 'Contents', levels: 3, entries: tocEntries(editor, pages, zoom, 3), updated: true } }, { type: 'paragraph' }]).run()
+        // the table itself moves the headings down: refresh page numbers once the layout settles
+        setTimeout(() => updateTocs(editor, live.pages, live.zoom, true), 700)
+        return
+      }
+      case 'updateToc':
+        return toast(updateTocs(editor, pages, zoom) ? 'Table of contents updated.' : 'Insert a table of contents first (References → Table of contents).', 'info')
+      case 'symbol':
+        return setDialog({ kind: 'symbol' })
       case 'footnote':
       case 'endnote': {
         const kind = a
@@ -719,6 +756,94 @@ function DocEditor({ docId, info, session, status, user, onUser, theme, onToggle
     setDialog(null)
   }
 
+  // ---- command search: every action by name
+  const commands = (): Command[] => {
+    const a = (id: RibbonAction, label: string, group: string, extra: Partial<Command> = {}): Command => ({ id, label, group, run: () => onAction(id), disabled: readOnly && !extra.keywords?.includes('view'), ...extra })
+    const c = () => editor!.chain().focus()
+    const list: Command[] = [
+      { id: 'bold', label: 'Bold', group: 'Format', run: () => c().toggleBold().run(), shortcut: `${mod}B`, disabled: readOnly },
+      { id: 'italic', label: 'Italic', group: 'Format', run: () => c().toggleItalic().run(), shortcut: `${mod}I`, disabled: readOnly },
+      { id: 'underline', label: 'Underline', group: 'Format', run: () => c().toggleUnderline().run(), shortcut: `${mod}U`, disabled: readOnly },
+      { id: 'clear', label: 'Clear formatting', group: 'Format', run: () => c().unsetAllMarks().run(), disabled: readOnly },
+      ...[1, 2, 3].map((l) => ({ id: `h${l}`, label: `Heading ${l}`, group: 'Styles', run: () => c().toggleHeading({ level: l as 1 | 2 | 3 }).run(), shortcut: `${mod}Alt+${l}`, disabled: readOnly })),
+      { id: 'normal', label: 'Normal text', group: 'Styles', run: () => c().setParagraph().run(), shortcut: `${mod}Alt+0`, disabled: readOnly },
+      { id: 'bullets', label: 'Bulleted list', group: 'Format', run: () => c().toggleBulletList().run(), disabled: readOnly },
+      { id: 'numbers', label: 'Numbered list', group: 'Format', run: () => c().toggleOrderedList().run(), disabled: readOnly },
+      { id: 'table', label: 'Insert table', group: 'Insert', run: () => c().insertTable({ rows: 3, cols: 3, withHeaderRow: true }).run(), disabled: readOnly },
+      { id: 'pagebreak', label: 'Insert page break', group: 'Insert', run: () => c().insertPageBreak().run(), shortcut: `${mod}Enter`, disabled: readOnly },
+      a('image', 'Insert picture', 'Insert', { keywords: 'image photo' }),
+      a('link', 'Insert link', 'Insert', { shortcut: `${mod}K`, keywords: 'hyperlink url' }),
+      a('bookmark', 'Insert bookmark', 'Insert'),
+      a('comment', 'New comment', 'Review', { shortcut: `${mod}Alt+M` }),
+      a('chart', 'Insert chart', 'Insert', { keywords: 'graph bar pie' }),
+      a('equation', 'Insert equation', 'Insert', { keywords: 'math formula' }),
+      a('symbol', 'Insert symbol', 'Insert', { keywords: 'special character euro copyright arrow greek' }),
+      a('textbox', 'Insert text box', 'Insert'),
+      a('draw', 'Draw (freehand)', 'Insert', { keywords: 'pen sketch' }),
+      ...Object.entries(SHAPE_NAMES).map(([k, v]) => a(`shape-${k}` as RibbonAction, `Insert shape: ${v}`, 'Insert', { keywords: 'shapes drawing' })),
+      a('pageNumber', 'Add page numbers', 'Insert'),
+      a('sectionBreak', 'Insert section break', 'Layout'),
+      a('header', 'Edit header', 'Layout'),
+      a('footer', 'Edit footer', 'Layout'),
+      a('pageSetup', 'Page setup (size, margins, orientation)', 'Layout'),
+      a('orientation', 'Rotate page (portrait / landscape)', 'Layout'),
+      a('columns-1', 'One column', 'Layout', { keywords: 'columns' }),
+      a('columns-2', 'Two columns', 'Layout', { keywords: 'columns' }),
+      a('columns-3', 'Three columns', 'Layout', { keywords: 'columns' }),
+      a('toc', 'Insert table of contents', 'References', { keywords: 'toc contents index' }),
+      a('updateToc', 'Update table of contents', 'References', { keywords: 'toc refresh page numbers' }),
+      a('footnote', 'Insert footnote', 'References', { shortcut: `${mod}Alt+F` }),
+      a('endnote', 'Insert endnote', 'References', { shortcut: `${mod}Alt+D` }),
+      a('citation', 'Insert citation', 'References', { keywords: 'cite reference source' }),
+      a('sources', 'Manage sources', 'References', { keywords: 'bibliography citations' }),
+      a('bibliography', 'Insert bibliography', 'References', { keywords: 'works cited references' }),
+      a('updateCitations', 'Update citations and bibliography', 'References'),
+      a('citationStyle-APA', 'Citation style: APA', 'References'),
+      a('citationStyle-MLA', 'Citation style: MLA', 'References'),
+      a('citationStyle-Chicago', 'Citation style: Chicago', 'References'),
+      a('mailMerge', 'Mail merge', 'Mailings', { keywords: 'csv recipients letters view' }),
+      a('toggleSuggest', 'Track changes on / off', 'Review', { keywords: 'suggesting revisions' }),
+      a('acceptAll', 'Accept all changes', 'Review'),
+      a('rejectAll', 'Reject all changes', 'Review'),
+      a('proofing', 'Check grammar and style', 'Review', { keywords: 'proofing spelling view' }),
+      a('wordCount', 'Word count', 'Review', { keywords: 'view statistics' }),
+      a('find', 'Find', 'Edit', { shortcut: `${mod}F`, keywords: 'search view' }),
+      { id: 'replace', label: 'Find and replace', group: 'Edit', run: () => setFindOpen({ replace: true }), shortcut: `${mod}H`, disabled: readOnly },
+      a('newStyle', 'New style', 'Styles'),
+      a('customXml', 'Custom XML data', 'File', { keywords: 'view' }),
+      { id: 'docx', label: 'Download as DOCX', group: 'File', run: () => exportAs('docx'), keywords: 'export save' },
+      { id: 'pdf', label: 'Download as PDF (print)', group: 'File', run: () => exportAs('pdf'), shortcut: `${mod}P`, keywords: 'export print' },
+      { id: 'html', label: 'Download as web page (HTML)', group: 'File', run: () => exportAs('html'), keywords: 'export' },
+      { id: 'txt', label: 'Download as plain text', group: 'File', run: () => exportAs('txt'), keywords: 'export' },
+      { id: 'open', label: 'Open a file…', group: 'File', run: () => openInput.current?.click(), shortcut: `${mod}O`, keywords: 'import docx' },
+      { id: 'new', label: 'New blank document', group: 'File', run: () => newDocument(), shortcut: `${mod}Alt+N` },
+      { id: 'version', label: 'Save a named version', group: 'File', run: () => saveVersion().catch((e) => toast(e.message, 'error')), shortcut: `${mod}S`, disabled: readOnly },
+      { id: 'share', label: 'Share…', group: 'File', run: () => setDialog({ kind: 'share' }) },
+      { id: 'props', label: 'Document properties', group: 'File', run: () => setDialog({ kind: 'props' }) },
+      a('report', 'Compatibility report', 'File', { keywords: 'view import', disabled: !info.hasOriginal }),
+      ...(
+        [
+          ['pages', 'Show pages and outline'],
+          ['comments', 'Show comments'],
+          ['changes', 'Show tracked changes'],
+          ['versions', 'Show version history'],
+          ['notes', 'Show footnotes and endnotes'],
+          ['proofing', 'Show proofing panel'],
+          ['merge', 'Show mail merge panel'],
+          ['ai', 'Show AI assistant'],
+        ] as [Panel, string][]
+      ).map(([p, label]) => ({ id: `panel-${p}`, label, group: 'View', run: () => setPanel(p) })),
+      a('zoomIn', 'Zoom in', 'View', { keywords: 'view' }),
+      a('zoomOut', 'Zoom out', 'View', { keywords: 'view' }),
+      a('zoomReset', 'Zoom to 100%', 'View', { keywords: 'view' }),
+      a('theme', theme === 'dark' ? 'Light theme' : 'Dark theme', 'View', { keywords: 'view appearance mode' }),
+      a('marks', 'Show / hide formatting marks', 'View', { keywords: 'view pilcrow' }),
+      a('print', 'Print', 'File', { keywords: 'view' }),
+      a('shortcuts', 'Keyboard shortcuts', 'Help', { shortcut: `${mod}/`, keywords: 'view help' }),
+    ]
+    return list
+  }
+
   // ---- format painter: apply copied formatting to the next selection
   useEffect(() => {
     if (!editor || !painter) return
@@ -781,12 +906,15 @@ function DocEditor({ docId, info, session, status, user, onUser, theme, onToggle
       } else if (e.altKey && (k === 'n' || e.code === 'KeyN')) {
         e.preventDefault()
         newDocument()
-      } else if (k === 'p') {
+      } else if (k === 'p' && !e.shiftKey) {
         e.preventDefault()
         printDoc()
       } else if (k === '/') {
         e.preventDefault()
         setDialog({ kind: 'shortcuts' })
+      } else if (e.shiftKey && (k === 'p' || e.code === 'KeyP')) {
+        e.preventDefault()
+        setPalette(true)
       } else if (e.altKey && !readOnly && (e.code === 'KeyF' || e.code === 'KeyD')) {
         e.preventDefault()
         onAction(e.code === 'KeyF' ? 'footnote' : 'endnote')
@@ -836,13 +964,18 @@ function DocEditor({ docId, info, session, status, user, onUser, theme, onToggle
         </span>
         {readOnly && <span className="sc-chip-ui">View only</span>}
         <span className="sc-spacer" />
+        <button className="sc-btn sc-search-btn" onClick={() => setPalette(true)} aria-label="Search commands" title={`Search commands (${mod}Shift+P)`}>
+          <Search size={16} />
+          <span>Search</span>
+          <kbd>{mod}⇧P</kbd>
+        </button>
         <Menu
           ariaLabel="File menu"
           label={<span className="sc-menu-label">File</span>}
           items={[
             { label: 'New blank document', onClick: () => newDocument(), shortcut: `${mod}Alt+N` },
             { label: 'Open…', onClick: () => openInput.current?.click(), shortcut: `${mod}O` },
-            { label: 'New from template…', onClick: () => (location.hash = '#/documents') },
+            { label: 'New from template…', onClick: () => navigate('#/documents') },
             'sep',
             { label: 'Save version', onClick: () => saveVersion().catch((e) => toast(e.message, 'error')), shortcut: `${mod}S`, disabled: readOnly },
             { label: 'Version history', onClick: () => setPanel('versions') },
@@ -859,7 +992,7 @@ function DocEditor({ docId, info, session, status, user, onUser, theme, onToggle
             'sep',
             { label: user.guest ? 'Save to an account…' : 'Account', onClick: () => setDialog({ kind: 'account' }) },
             { label: 'Keyboard shortcuts', onClick: () => setDialog({ kind: 'shortcuts' }), shortcut: `${mod}/` },
-            { label: 'All documents', onClick: () => (location.hash = '#/documents') },
+            { label: 'All documents', onClick: () => navigate('#/documents') },
           ]}
         />
         <button className="sc-btn with-label" onClick={() => exportAs('docx')} title="Download as DOCX" aria-label="Download as DOCX">
@@ -1063,6 +1196,7 @@ function DocEditor({ docId, info, session, status, user, onUser, theme, onToggle
         />
       )}
       {dialog?.kind === 'account' && <AccountDialog user={user} onUser={onUser} onClose={() => setDialog(null)} />}
+      {palette && <CommandPalette getCommands={commands} onClose={() => { setPalette(false); editor.commands.focus() }} />}
       <Suspense fallback={null}>
       {dialog?.kind === 'object' && (() => {
         const node = editor.state.doc.nodeAt(dialog.pos)
@@ -1086,6 +1220,14 @@ function DocEditor({ docId, info, session, status, user, onUser, theme, onToggle
             const width = Math.min(480, Math.round(twipToPx(p.width - p.marginLeft - p.marginRight)))
             editor.chain().focus().insertContent({ type: 'opaqueInline', attrs: { xml: '', label: 'Chart', preview: chart.title || 'Chart', object: { kind: 'chart', chart, width, height: Math.round(width * 0.6) } } }).run()
             setDialog(null)
+          }}
+        />
+      )}
+      {dialog?.kind === 'symbol' && (
+        <SymbolDialog
+          onClose={() => setDialog(null)}
+          onInsert={(ch: string) => {
+            editor.chain().focus().insertContent(ch).run()
           }}
         />
       )}
@@ -1355,6 +1497,11 @@ function buildStyleCss(meta: DocMeta) {
 
 export { emptyMeta }
 
+/** Route change outside React state (hash routing). */
+function navigate(hash: string) {
+  location.hash = hash
+}
+
 /** Mutable values read outside rendering by editor plugins, timers and the print flow. */
 class LiveState {
   gap = 24
@@ -1380,6 +1527,11 @@ class LiveState {
   }
   setZoom(z: number) {
     this.zoom = z
+  }
+  /** latest page layout (read by timers) */
+  pages: PageInfo[] = []
+  setPages(p: PageInfo[]) {
+    this.pages = p
   }
   beginPrint() {
     this.printZoom = this.zoom
