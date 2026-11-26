@@ -35,6 +35,8 @@ export interface SectionProps {
   /** Section start type: nextPage | continuous | evenPage | oddPage | nextColumn */
   breakType?: string
   columns?: number
+  /** columns changed in SCRIBE: the exporter writes a new <w:cols> */
+  columnsEdited?: boolean
   pageNumberStart?: number
   /** Original <w:sectPr> XML; unknown children are re-emitted on export. */
   rawXml?: string
@@ -57,6 +59,8 @@ export interface Footnote {
   text: string
   /** Original <w:footnote> XML (preserved verbatim if present). */
   rawXml?: string
+  /** text changed (or note created) in SCRIBE: the exporter rewrites this note */
+  edited?: boolean
 }
 
 export interface DocMetadata {
