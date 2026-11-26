@@ -9,6 +9,7 @@ import Image from '@tiptap/extension-image'
 import Subscript from '@tiptap/extension-subscript'
 import Superscript from '@tiptap/extension-superscript'
 import { twipToPx } from './types'
+import { LIST_STYLES, VERTICAL_ALIGN, safeColor, safeFontFamily, safeKeyword, safeLength, safeNumber } from './safeCss'
 import { chartSvg, type ChartData } from '../objects/chart'
 import { ommlToMathml } from '../objects/math'
 import { DEFAULT_SHAPE, SHAPE_KINDS, shapeSvg, type ShapeAttrs } from '../objects/shapes'
@@ -34,12 +35,13 @@ export const ParagraphFormat = Extension.create({
         const v = el.getAttribute(`data-${name}`)
         return v == null || v === '' || !Number.isFinite(Number(v)) ? null : Number(v)
       },
-      renderHTML: (attrs: Record<string, any>) => (attrs[key] == null ? {} : { [`data-${name}`]: attrs[key] }),
+      renderHTML: (attrs: Record<string, any>) => (safeNumber(attrs[key]) == null ? {} : { [`data-${name}`]: safeNumber(attrs[key]) }),
     })
     const str = (key: string, name: string) => ({
       default: null,
       parseHTML: (el: HTMLElement) => el.getAttribute(`data-${name}`),
-      renderHTML: (attrs: Record<string, any>) => (attrs[key] == null ? {} : { [`data-${name}`]: attrs[key] }),
+      // only plain tokens are mirrored into data-* attributes (colours, style ids, keywords)
+      renderHTML: (attrs: Record<string, any>) => (typeof attrs[key] === 'string' && /^[\w#.,() %-]{1,80}$/.test(attrs[key]) && (key !== 'shading' || safeColor(attrs[key])) ? { [`data-${name}`]: attrs[key] } : {}),
     })
     return [
       {
@@ -58,6 +60,15 @@ export const ParagraphFormat = Extension.create({
           keepNext: { default: null },
           shading: str('shading', 'shading'),
           direction: str('direction', 'dir'),
+          // validated alignment (the text-align extension writes its value straight into a style attribute)
+          textAlign: {
+            default: null,
+            parseHTML: (el: HTMLElement) => safeKeyword(el.style.textAlign, ['left', 'center', 'right', 'justify']),
+            renderHTML: (a: Record<string, any>) => {
+              const v = safeKeyword(a.textAlign, ['left', 'center', 'right', 'justify'])
+              return v && v !== 'left' ? { style: `text-align:${v}` } : {}
+            },
+          },
           /** Raw unknown <w:pPr> children, re-emitted verbatim on DOCX export. */
           pPrExtra: { default: null, rendered: false },
           /** Paragraph-mark run properties (affects empty-paragraph height). */
@@ -75,17 +86,21 @@ export const ParagraphFormat = Extension.create({
             default: null,
             rendered: true,
             renderHTML: (a: Record<string, any>) => {
+              // every value is validated: paragraph attributes come from files and collaborators
               const css: string[] = []
-              if (a.indentLeft != null) css.push(`margin-left:${twipToPx(a.indentLeft)}px`)
-              if (a.indentRight != null) css.push(`margin-right:${twipToPx(a.indentRight)}px`)
-              if (a.indentFirstLine != null) css.push(`text-indent:${twipToPx(a.indentFirstLine)}px`)
-              if (a.spacingBefore != null) css.push(`margin-top:${twipToPx(a.spacingBefore)}px`)
-              if (a.spacingAfter != null) css.push(`margin-bottom:${twipToPx(a.spacingAfter)}px`)
-              if (a.lineSpacing != null) {
-                if (!a.lineRule || a.lineRule === 'auto') css.push(`line-height:${a.lineSpacing}`)
-                else css.push(`line-height:${twipToPx(a.lineSpacing)}px`)
+              const tw = (v: unknown) => safeNumber(v, -1e5, 1e5)
+              const px = (v: number) => `${Math.round(twipToPx(v) * 100) / 100}px`
+              if (tw(a.indentLeft) != null) css.push(`margin-left:${px(tw(a.indentLeft)!)}`)
+              if (tw(a.indentRight) != null) css.push(`margin-right:${px(tw(a.indentRight)!)}`)
+              if (tw(a.indentFirstLine) != null) css.push(`text-indent:${px(tw(a.indentFirstLine)!)}`)
+              if (tw(a.spacingBefore) != null) css.push(`margin-top:${px(tw(a.spacingBefore)!)}`)
+              if (tw(a.spacingAfter) != null) css.push(`margin-bottom:${px(tw(a.spacingAfter)!)}`)
+              const ls = safeNumber(a.lineSpacing, 0, 1e5)
+              if (ls != null) {
+                if (!a.lineRule || a.lineRule === 'auto') css.push(`line-height:${Math.min(ls, 20)}`)
+                else css.push(`line-height:${px(ls)}`)
               }
-              if (a.shading) css.push(`background-color:${a.shading}`)
+              if (safeColor(a.shading)) css.push(`background-color:${safeColor(a.shading)}`)
               if (a.direction === 'rtl') css.push('direction:rtl')
               return css.length ? { style: css.join(';') } : {}
             },
@@ -131,8 +146,29 @@ export const RunExtras = Extension.create({
           charStyle: { default: null, rendered: false },
           letterSpacing: {
             default: null,
-            parseHTML: (el: HTMLElement) => el.style.letterSpacing || null,
-            renderHTML: (a: Record<string, any>) => (a.letterSpacing ? { style: `letter-spacing:${a.letterSpacing}` } : {}),
+            parseHTML: (el: HTMLElement) => safeLength(el.style.letterSpacing, ['pt', 'px', 'em']),
+            renderHTML: (a: Record<string, any>) => (safeLength(a.letterSpacing, ['pt', 'px', 'em']) ? { style: `letter-spacing:${safeLength(a.letterSpacing, ['pt', 'px', 'em'])}` } : {}),
+          },
+          // the text-style kit writes these straight into style attributes: validate them (same names: these definitions take precedence)
+          color: {
+            default: null,
+            parseHTML: (el: HTMLElement) => safeColor(el.style.color?.replace(/['"]+/g, '')),
+            renderHTML: (a: Record<string, any>) => (safeColor(a.color) ? { style: `color:${safeColor(a.color)}` } : {}),
+          },
+          backgroundColor: {
+            default: null,
+            parseHTML: (el: HTMLElement) => safeColor(el.style.backgroundColor?.replace(/['"]+/g, '')),
+            renderHTML: (a: Record<string, any>) => (safeColor(a.backgroundColor) ? { style: `background-color:${safeColor(a.backgroundColor)}` } : {}),
+          },
+          fontFamily: {
+            default: null,
+            parseHTML: (el: HTMLElement) => safeFontFamily(el.style.fontFamily),
+            renderHTML: (a: Record<string, any>) => (safeFontFamily(a.fontFamily) ? { style: `font-family:${safeFontFamily(a.fontFamily)}` } : {}),
+          },
+          fontSize: {
+            default: null,
+            parseHTML: (el: HTMLElement) => safeLength(el.style.fontSize),
+            renderHTML: (a: Record<string, any>) => (safeLength(a.fontSize) ? { style: `font-size:${safeLength(a.fontSize)}` } : {}),
           },
           caps: {
             default: null,
@@ -393,6 +429,56 @@ export const Shape = Node.create({
   },
 })
 
+export interface TocEntry {
+  level: number
+  text: string
+  /** page number shown ('' until the table is updated) */
+  page: string
+  /** stable id (nid) of the heading this entry points to */
+  target?: string
+}
+
+/**
+ * Table of contents built from the document's headings. An imported table keeps its original
+ * XML (rawXml) and is written back unchanged until it is updated in SCRIBE.
+ */
+export const TableOfContents = Node.create({
+  name: 'toc',
+  group: 'block',
+  atom: true,
+  selectable: true,
+  addAttributes() {
+    return {
+      title: { default: 'Contents' },
+      levels: { default: 3 },
+      entries: { default: [], rendered: false },
+      rawXml: { default: null, rendered: false },
+      /** set when SCRIBE regenerated the entries: the exporter writes a new table */
+      updated: { default: false, rendered: false },
+    }
+  },
+  parseHTML() {
+    return [{ tag: 'div[data-scribe="toc"]' }]
+  },
+  renderHTML({ node }) {
+    const entries = (Array.isArray(node.attrs.entries) ? node.attrs.entries : []) as TocEntry[]
+    return [
+      'div',
+      { 'data-scribe': 'toc', class: 'sc-toc', contenteditable: 'false', title: 'Table of contents (References → Update table). Click an entry to go to it.' },
+      ['p', { class: 'sc-toc-title' }, String(node.attrs.title || 'Contents')],
+      ...(entries.length
+        ? entries.map((e) => [
+            'p',
+            { class: `sc-toc-entry is-level-${Math.min(9, Math.max(1, Number(e.level) || 1))}`, 'data-toc-target': e.target ?? '' },
+            ['span', { class: 'sc-toc-text' }, String(e.text)],
+            ['span', { class: 'sc-toc-leader' }],
+            ['span', { class: 'sc-toc-page' }, String(e.page ?? '')],
+          ])
+        : [['p', { class: 'sc-toc-entry sc-muted' }, 'No headings yet. Use Heading styles, then choose Update table.']]),
+    ]
+  },
+})
+
 /** Bibliography generated from the document's sources. entries: [[{text, italic}]] */
 export const Bibliography = Node.create({
   name: 'bibliography',
@@ -519,13 +605,13 @@ export const ScribeImage = Image.extend({
 const cellAttrs = {
   background: {
     default: null,
-    parseHTML: (el: HTMLElement) => el.style.backgroundColor || el.getAttribute('data-background'),
-    renderHTML: (a: any) => (a.background ? { style: `background-color:${a.background}` } : {}),
+    parseHTML: (el: HTMLElement) => safeColor(el.style.backgroundColor || el.getAttribute('data-background')),
+    renderHTML: (a: any) => (safeColor(a.background) ? { style: `background-color:${safeColor(a.background)}` } : {}),
   },
   verticalAlign: {
     default: null,
-    parseHTML: (el: HTMLElement) => el.style.verticalAlign || null,
-    renderHTML: (a: any) => (a.verticalAlign ? { style: `vertical-align:${a.verticalAlign}` } : {}),
+    parseHTML: (el: HTMLElement) => safeKeyword(el.style.verticalAlign, VERTICAL_ALIGN),
+    renderHTML: (a: any) => (safeKeyword(a.verticalAlign, VERTICAL_ALIGN) ? { style: `vertical-align:${safeKeyword(a.verticalAlign, VERTICAL_ALIGN)}` } : {}),
   },
   tcPrExtra: { default: null, rendered: false },
 }
@@ -562,12 +648,25 @@ export const ListNumbering = Extension.create({
           numId: { default: null, rendered: false },
           listStyle: {
             default: null,
-            parseHTML: (el: HTMLElement) => el.style.listStyleType || null,
-            renderHTML: (a: any) => (a.listStyle ? { style: `list-style-type:${a.listStyle}` } : {}),
+            parseHTML: (el: HTMLElement) => safeKeyword(el.style.listStyleType, LIST_STYLES),
+            renderHTML: (a: any) => (safeKeyword(a.listStyle, LIST_STYLES) ? { style: `list-style-type:${safeKeyword(a.listStyle, LIST_STYLES)}` } : {}),
           },
         },
       },
     ]
+  },
+})
+
+/** Highlight with a validated colour (the stock mark writes the value straight into a style attribute). */
+export const SafeHighlight = Highlight.extend({
+  addAttributes() {
+    return {
+      color: {
+        default: null,
+        parseHTML: (el: HTMLElement) => safeColor(el.getAttribute('data-color') || el.style.backgroundColor),
+        renderHTML: (a: Record<string, any>) => (safeColor(a.color) ? { 'data-color': safeColor(a.color), style: `background-color:${safeColor(a.color)};color:inherit` } : {}),
+      },
+    }
   },
 })
 
@@ -577,14 +676,14 @@ export const StableIds = Extension.create({
   addGlobalAttributes() {
     return [
       {
-        types: ['paragraph', 'heading', 'table', 'bulletList', 'orderedList', 'blockquote', 'codeBlock', 'opaqueBlock', 'pageBreak', 'sectionBreak', 'image', 'bibliography'],
+        types: ['paragraph', 'heading', 'table', 'bulletList', 'orderedList', 'blockquote', 'codeBlock', 'opaqueBlock', 'pageBreak', 'sectionBreak', 'image', 'bibliography', 'toc'],
         attributes: { nid: { default: null, keepOnSplit: false, renderHTML: (a: any) => (a.nid ? { 'data-nid': a.nid } : {}), parseHTML: () => null } },
       },
     ]
   },
   addProseMirrorPlugins() {
     const key = new PluginKey('stableIds')
-    const types = new Set(['paragraph', 'heading', 'table', 'bulletList', 'orderedList', 'blockquote', 'codeBlock', 'opaqueBlock', 'pageBreak', 'sectionBreak', 'bibliography'])
+    const types = new Set(['paragraph', 'heading', 'table', 'bulletList', 'orderedList', 'blockquote', 'codeBlock', 'opaqueBlock', 'pageBreak', 'sectionBreak', 'bibliography', 'toc'])
     return [
       new Plugin({
         key,
@@ -630,7 +729,7 @@ export function schemaExtensions(opts: { collaborative?: boolean } = {}) {
       heading: { levels: [1, 2, 3, 4, 5, 6] },
     }),
     TextStyleKit.configure({ lineHeight: false }),
-    Highlight.configure({ multicolor: true }),
+    SafeHighlight.configure({ multicolor: true }),
     TextAlign.configure({ types: ['heading', 'paragraph'], alignments: ['left', 'center', 'right', 'justify'] }),
     ScribeTable,
     ScribeTableRow,
@@ -653,6 +752,7 @@ export function schemaExtensions(opts: { collaborative?: boolean } = {}) {
     OpaqueInline,
     Shape,
     Bibliography,
+    TableOfContents,
     CommentMark,
     InsertionMark,
     DeletionMark,
