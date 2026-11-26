@@ -15,8 +15,8 @@ import { twipToPx } from '../model/types'
  * word processor. Explicit page breaks, "page break before", next-page section
  * breaks and per-section page sizes are honoured.
  *
- * Limitation: table rows and other atomic blocks taller than one page are not
- * split; they overflow into the page gap.
+ * Tables break between rows. A single row or atomic block taller than a page
+ * overflows into the page gap.
  */
 
 export interface PageInfo {
@@ -36,7 +36,16 @@ export interface PageInfo {
   firstOfSection: boolean
   /** displayed page number (honours section page-number restarts) */
   number: number
+  /** footnote ids shown at the bottom of this page, in order */
+  notes: string[]
+  /** px reserved at the bottom of the text area for footnotes (0 when none) */
+  noteSpace: number
+  /** endnotes block position (layout px from page top) when this page holds them */
+  endnotesTop?: number
 }
+
+/** px between the body text and the footnote separator */
+export const NOTE_SEPARATOR = 14
 
 export interface PaginationOptions {
   getSections: () => SectionProps[]
@@ -45,6 +54,10 @@ export interface PaginationOptions {
   /** CSS zoom applied to the page canvas; client rects are divided by it */
   getScale: () => number
   onLayout: (pages: PageInfo[]) => void
+  /** rendered height in px of a footnote's text (0 if unknown) */
+  getNoteHeight?: (id: string) => number
+  /** rendered height in px of the endnotes block (0 when there are none) */
+  getEndnotesHeight?: () => number
 }
 
 const key = new PluginKey<DecorationSet>('scribe-pagination')
@@ -56,6 +69,10 @@ interface Unit {
   textblock: boolean
   section: number
   forceBreakBefore: boolean
+  /** table row: number of grid columns (the page-break spacer is a table row) */
+  rowCols?: number
+  /** table row: position of its table */
+  tablePos?: number
 }
 
 function pageGeom(sec: SectionProps | undefined) {
@@ -89,7 +106,18 @@ function collectUnits(doc: PMNode): Unit[] {
         if (n.attrs.breakType !== 'continuous') breakNext = true
         return
       }
-      if (n.isTextblock || n.type.name === 'table' || n.isAtom || n.type.name === 'horizontalRule') {
+      if (n.type.name === 'table') {
+        // tables break between rows
+        const first = n.firstChild
+        let cols = 0
+        first?.forEach((cell) => (cols += Number(cell.attrs.colspan) || 1))
+        n.forEach((row, o) => {
+          units.push({ pos: pos + 1 + o, node: row, textblock: false, section, forceBreakBefore: o === 0 && breakNext, rowCols: Math.max(1, cols), tablePos: pos })
+        })
+        breakNext = false
+        return
+      }
+      if (n.isTextblock || n.isAtom || n.type.name === 'horizontalRule') {
         units.push({ pos, node: n, textblock: n.isTextblock, section, forceBreakBefore: breakNext || !!n.attrs?.pageBreakBefore })
         breakNext = false
         return
@@ -102,8 +130,20 @@ function collectUnits(doc: PMNode): Unit[] {
   return units
 }
 
-function spacer(height: number, kind: 'block' | 'inline', page: number) {
+function spacer(height: number, kind: 'block' | 'inline' | 'row', page: number, cols = 1) {
   return () => {
+    if (kind === 'row') {
+      const tr = document.createElement('tr')
+      tr.className = 'sc-page-spacer sc-page-spacer-row'
+      tr.setAttribute('contenteditable', 'false')
+      tr.setAttribute('aria-hidden', 'true')
+      tr.dataset.page = String(page)
+      const td = document.createElement('td')
+      td.colSpan = cols
+      td.style.height = `${Math.max(0, height)}px`
+      tr.appendChild(td)
+      return tr
+    }
     const el = document.createElement(kind === 'block' ? 'div' : 'span')
     el.className = 'sc-page-spacer'
     el.setAttribute('contenteditable', 'false')
@@ -134,12 +174,28 @@ export function computeLayout(view: EditorView, opts: PaginationOptions): { deco
     const top = prev ? prev.top + prev.height + gap : -g.marginTop
     const restart = sections[section]?.pageNumberStart
     const number = firstOfSection && restart != null ? restart : (prev?.number ?? 0) + 1
-    pages.push({ index: pages.length, section, top, ...g, firstOfSection, number })
+    pages.push({ index: pages.length, section, top, ...g, firstOfSection, number, notes: [], noteSpace: 0 })
     return pages[pages.length - 1]
   }
   let page = addPage(0, true)
   const contentTop = (p: PageInfo) => p.top + p.marginTop
-  const contentBottom = (p: PageInfo) => p.top + p.height - p.marginBottom
+  const contentBottom = (p: PageInfo) => p.top + p.height - p.marginBottom - p.noteSpace
+  // footnotes: each reference reserves the height of its note on the page where it lands
+  const noteH = (id: string) => Math.max(0, opts.getNoteHeight?.(id) ?? 0)
+  const reserve = (p: PageInfo, id: string) => {
+    if (p.notes.includes(id)) return
+    if (!p.notes.length) p.noteSpace += NOTE_SEPARATOR
+    p.notes.push(id)
+    p.noteSpace += noteH(id)
+  }
+  const release = (p: PageInfo, id: string) => {
+    const i = p.notes.indexOf(id)
+    if (i === -1) return
+    p.notes.splice(i, 1)
+    p.noteSpace -= noteH(id)
+    if (!p.notes.length) p.noteSpace = 0
+  }
+  let lastBottom = 0
   const decos: Decoration[] = []
   let offset = 0
 
@@ -156,22 +212,31 @@ export function computeLayout(view: EditorView, opts: PaginationOptions): { deco
     if (sec && u.section !== 0) {
       const g = pageGeom(sec)
       const w = g.width - g.marginLeft - g.marginRight
-      if (Math.abs(w - firstWidth) > 1 && u.pos >= 0) decos.push(Decoration.node(u.pos, u.pos + u.node.nodeSize, { style: `width:${w}px;max-width:none` }))
+      if (Math.abs(w - firstWidth) > 1 && u.pos >= 0 && u.rowCols === undefined) decos.push(Decoration.node(u.pos, u.pos + u.node.nodeSize, { style: `width:${w}px;max-width:none` }))
     }
     const newPageFor = (section: number) => {
       const first = section !== page.section
       page = addPage(section, first)
     }
+    // footnote references inside this block: [document position, note id]
+    const refs: [number, string][] = []
+    if (opts.getNoteHeight)
+      u.node.descendants((n, p) => {
+        if (n.type.name === 'noteRef' && n.attrs.kind !== 'endnote') refs.push([u.pos + 1 + p, String(n.attrs.noteId)])
+      })
+    let refPage: PageInfo
     if (u.forceBreakBefore || u.section !== page.section) {
       if (top > contentTop(page) - 0.5 || u.section !== page.section) {
         newPageFor(u.section)
         const h = contentTop(page) - top
-        decos.push(Decoration.widget(u.pos, spacer(h, 'block', page.index), { side: -1, key: `pb-${u.pos}-${Math.round(h)}`, ignoreSelection: true }))
+        decos.push(Decoration.widget(u.pos, u.rowCols ? spacer(h, 'row', page.index, u.rowCols) : spacer(h, 'block', page.index), { side: -1, key: `pb-${u.pos}-${Math.round(h)}`, ignoreSelection: true }))
         offset += h
         top += h
         bottom += h
       }
     }
+    refPage = page
+    for (const [, id] of refs) reserve(page, id)
     // overflow: move or split
     while (bottom > contentBottom(page) + 0.5) {
       if (top <= contentTop(page) + 0.5 && !u.textblock) {
@@ -192,6 +257,12 @@ export function computeLayout(view: EditorView, opts: PaginationOptions): { deco
       newPageFor(u.section)
       if (splitPos != null && lineTop > top + 0.5) {
         const h = contentTop(page) - lineTop
+        for (const [p, id] of refs)
+          if (p >= splitPos && refPage.notes.includes(id)) {
+            release(refPage, id)
+            reserve(page, id)
+          }
+        refPage = page
         decos.push(Decoration.widget(splitPos, spacer(h, 'inline', page.index), { side: -1, key: `ps-${splitPos}-${Math.round(h)}`, ignoreSelection: true, marks: [] }))
         offset += h
         bottom += h
@@ -206,13 +277,29 @@ export function computeLayout(view: EditorView, opts: PaginationOptions): { deco
           // unsplittable and already at page top: overflow
           break
         }
+        for (const [, id] of refs) {
+          release(refPage, id)
+          reserve(page, id)
+        }
+        refPage = page
         const h = contentTop(page) - top
-        decos.push(Decoration.widget(u.pos, spacer(h, 'block', page.index), { side: -1, key: `pb-${u.pos}-${Math.round(h)}`, ignoreSelection: true }))
+        decos.push(Decoration.widget(u.pos, u.rowCols ? spacer(h, 'row', page.index, u.rowCols) : spacer(h, 'block', page.index), { side: -1, key: `pb-${u.pos}-${Math.round(h)}`, ignoreSelection: true }))
         offset += h
         top += h
         bottom += h
       }
     }
+    lastBottom = bottom
+  }
+  // endnotes follow the last block, on a new page when they don't fit
+  const endH = opts.getEndnotesHeight?.() ?? 0
+  if (endH > 0) {
+    let start = Math.max(lastBottom, contentTop(page)) + 24
+    if (start + endH > contentBottom(page) && start > contentTop(page) + 24) {
+      page = addPage(page.section, false)
+      start = contentTop(page)
+    }
+    page.endnotesTop = start - page.top
   }
   return { decos, pages }
 }
@@ -288,7 +375,7 @@ export const Pagination = Extension.create<PaginationOptions>({
             const { decos, pages } = computeLayout(view, opts)
             view.dispatch(view.state.tr.setMeta(key, DecorationSet.create(view.state.doc, decos)).setMeta('addToHistory', false))
             if (scroller) scroller.scrollTop = scrollTop
-            const sig = JSON.stringify(pages.map((p) => [p.top, p.height, p.section, p.number]))
+            const sig = JSON.stringify(pages.map((p) => [p.top, p.height, p.section, p.number, p.notes, p.noteSpace, p.endnotesTop]))
             if (sig !== lastSig) {
               lastSig = sig
               opts.onLayout(pages)
