@@ -222,9 +222,51 @@ export const Field = atomInline('field', { instr: { default: '' }, result: { def
 
 export const NoteRef = atomInline('noteRef', { noteId: { default: '' }, kind: { default: 'footnote' }, label: { default: '' } }, (a) => [
   'sup',
-  { class: 'sc-note-ref', 'data-note': a.noteId, title: a.kind === 'endnote' ? 'Endnote' : 'Footnote' },
+  { class: 'sc-note-ref', 'data-note': a.noteId, 'data-kind': a.kind === 'endnote' ? 'endnote' : 'footnote', title: a.kind === 'endnote' ? 'Endnote' : 'Footnote' },
   a.label || '*',
 ])
+
+function roman(n: number): string {
+  const map: [number, string][] = [[1000, 'm'], [900, 'cm'], [500, 'd'], [400, 'cd'], [100, 'c'], [90, 'xc'], [50, 'l'], [40, 'xl'], [10, 'x'], [9, 'ix'], [5, 'v'], [4, 'iv'], [1, 'i']]
+  let out = ''
+  for (const [v, s] of map) while (n >= v) {
+    out += s
+    n -= v
+  }
+  return out
+}
+
+/** Footnote and endnote references are numbered in document order (1, 2, 3… per kind). */
+export const NoteNumbering = Extension.create({
+  name: 'noteNumbering',
+  addProseMirrorPlugins() {
+    return [
+      new Plugin({
+        key: new PluginKey('noteNumbering'),
+        appendTransaction(trs, _old, state) {
+          if (!trs.some((t) => t.docChanged)) return null
+          const counters: Record<string, number> = { footnote: 0, endnote: 0 }
+          const tr = state.tr
+          let changed = false
+          state.doc.descendants((node, pos) => {
+            if (node.type.name !== 'noteRef') return
+            const kind = node.attrs.kind === 'endnote' ? 'endnote' : 'footnote'
+            const n = ++counters[kind]
+            // endnotes use lowercase roman numerals, the default numbering for endnotes in DOCX files
+            const label = kind === 'endnote' ? roman(n) : String(n)
+            if (node.attrs.label !== label) {
+              tr.setNodeMarkup(pos, undefined, { ...node.attrs, label })
+              changed = true
+            }
+          })
+          if (!changed) return null
+          tr.setMeta('addToHistory', false)
+          return tr
+        },
+      }),
+    ]
+  },
+})
 
 /** Preserved OOXML the editor does not understand (shapes, charts, equations, content controls...). */
 export const OpaqueBlock = Node.create({
@@ -605,6 +647,7 @@ export function schemaExtensions(opts: { collaborative?: boolean } = {}) {
     Bookmark,
     Field,
     NoteRef,
+    NoteNumbering,
     OpaqueBlock,
     OpaqueInline,
     Shape,
