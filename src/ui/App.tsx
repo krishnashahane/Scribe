@@ -1,9 +1,10 @@
-import { useEffect, useState } from 'react'
+import { lazy, Suspense, useEffect, useState } from 'react'
 import { api, type User } from '../api'
 import { ToastProvider } from './kit'
-import { Login } from './Login'
-import { Home } from './Home'
-import { EditorScreen } from './EditorScreen'
+// screens load on demand: the editor, the documents list and sign-in are separate files
+const EditorScreen = lazy(() => import('./EditorScreen').then((m) => ({ default: m.EditorScreen })))
+const Home = lazy(() => import('./Home').then((m) => ({ default: m.Home })))
+const Login = lazy(() => import('./Login').then((m) => ({ default: m.Login })))
 import { createFromTemplate, openDoc } from './docActions'
 
 export type Theme = 'light' | 'dark'
@@ -111,5 +112,18 @@ export function App() {
   } else {
     screen = <Home user={user} onUser={setUser} onSignOut={signOut} theme={theme} onToggleTheme={toggleTheme} />
   }
-  return <ToastProvider>{screen}</ToastProvider>
+  return (
+    <ToastProvider>
+      <Suspense
+        fallback={
+          <div className="sc-splash" aria-busy="true">
+            <span className="sc-logo">SCRIBE</span>
+            <span className="sc-muted">Opening…</span>
+          </div>
+        }
+      >
+        {screen}
+      </Suspense>
+    </ToastProvider>
+  )
 }
