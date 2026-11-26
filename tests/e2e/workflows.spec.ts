@@ -300,7 +300,7 @@ test('shapes, equations, citations, bibliography, proofing and mail merge work e
   await page.getByRole('button', { name: 'Chart', exact: true }).click()
   await page.getByRole('radio', { name: 'Pie' }).click()
   await page.getByRole('textbox', { name: 'Chart title' }).fill('Budget split')
-  await page.getByRole('button', { name: 'Save chart' }).click()
+  await page.getByRole('dialog').getByRole('button', { name: 'Save', exact: true }).click()
   await expect(page.locator('.sc-doc img.sc-chart')).toHaveAttribute('alt', 'Budget split')
 
   // citation and bibliography
