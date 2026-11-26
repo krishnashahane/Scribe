@@ -612,3 +612,23 @@ textarea { height: auto; min-height: 70px; padding: 8px 10px; resize: vertical; 
 .sc-proof-list .sc-comment-actions button:not(.sc-primary):hover { color: var(--accent-2); background: var(--surface-2); }
 .sc-inline-select .sc-select { width: 150px; }
 .sc-doc .sc-equation math { font-size: 1.12em; }
+
+/* footnotes and endnotes on the page */
+.sc-page-notes { position: absolute; font-size: 9pt; line-height: 1.3; color: #1b1b1b; padding-top: 14px; overflow: hidden; white-space: normal; }
+.sc-page-notes::before { content: ''; position: absolute; top: 6px; left: 0; width: 2in; border-top: 1px solid #8c8c8c; }
+.sc-page-notes.is-endnotes { padding-top: 0; overflow: visible; }
+.sc-page-notes.is-endnotes::before { display: none; }
+.sc-page-notes p { margin: 0 0 2px; }
+.sc-page-notes sup { font-size: 0.75em; color: #2f5597; margin-right: 1px; }
+.sc-notes-title { font-weight: 700; font-size: 11pt; color: #1f2a44; margin: 0 0 6px; }
+.sc-doc .sc-note-ref { color: #2f5597; font-size: 0.75em; padding: 0 1px; cursor: pointer; }
+.sc-notes-section h4 { margin: 4px 0 8px; font-size: 13px; display: flex; align-items: center; gap: 6px; }
+.sc-note-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+.sc-note-list li { display: grid; grid-template-columns: 28px 1fr 24px; gap: 6px; align-items: start; }
+.sc-note-list textarea { min-height: 52px; font-size: 13px; }
+.sc-note-num { height: 26px; border-radius: 7px; border: 1px solid var(--line); background: var(--accent-soft); color: var(--accent); font-weight: 700; font-size: 12px; }
+.sc-note-num:hover { border-color: var(--accent-2); }
+
+/* page-break spacer inside a table (tables break between rows) */
+.sc-doc tr.sc-page-spacer-row td { border: none !important; padding: 0 !important; background: transparent !important; }
+.sc-doc tr.sc-page-spacer-row + tr > td { border-top-width: 1px; }
