@@ -7,6 +7,7 @@ import { applySmartArtData, applySmartArtDrawing, type SmartArtData } from '../o
 import { shapeRunXml, WPS_NS, type ShapeAttrs } from '../objects/shapes'
 import { BIB_NS, sourcesXml } from '../features/citations'
 import { applyStyleEdits } from '../features/styles'
+import { referencedNotes, writeNotes } from './notes'
 import { HIGHLIGHT_NAMES } from './import'
 import { resolvePath } from './package'
 import {
@@ -29,6 +30,8 @@ const REL = {
   header: 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/header',
   footer: 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/footer',
   comments: 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/comments',
+  footnotes: 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/footnotes',
+  endnotes: 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/endnotes',
   core: 'http://schemas.openxmlformats.org/package/2006/relationships/metadata/core-properties',
   app: 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/extended-properties',
 }
@@ -41,6 +44,8 @@ const CT = {
   header: 'application/vnd.openxmlformats-officedocument.wordprocessingml.header+xml',
   footer: 'application/vnd.openxmlformats-officedocument.wordprocessingml.footer+xml',
   comments: 'application/vnd.openxmlformats-officedocument.wordprocessingml.comments+xml',
+  footnotes: 'application/vnd.openxmlformats-officedocument.wordprocessingml.footnotes+xml',
+  endnotes: 'application/vnd.openxmlformats-officedocument.wordprocessingml.endnotes+xml',
   core: 'application/vnd.openxmlformats-package.core-properties+xml',
   app: 'application/vnd.openxmlformats-officedocument.extended-properties+xml',
   rels: 'application/vnd.openxmlformats-package.relationships+xml',
@@ -907,6 +912,7 @@ function sectPrXml(ctx: Ctx, index: number): string {
       for (const c of children(d.documentElement)) {
         if (c.namespaceURI === NS.w) {
           if (['pgSz', 'pgMar', 'type', 'titlePg'].includes(c.localName)) continue
+          if (c.localName === 'cols' && sec.columnsEdited) continue
           if ((c.localName === 'headerReference' || c.localName === 'footerReference') && attr(c, 'type') !== 'even') continue
           if (c.localName === 'pgNumType' && sec.pageNumberStart != null) {
             c.setAttributeNS(NS.w, 'w:start', String(sec.pageNumberStart))
@@ -935,6 +941,7 @@ function sectPrXml(ctx: Ctx, index: number): string {
   parts.push(el('w:pgMar', { 'w:top': p.marginTop, 'w:right': p.marginRight, 'w:bottom': p.marginBottom, 'w:left': p.marginLeft, 'w:header': p.marginHeader, 'w:footer': p.marginFooter, 'w:gutter': 0 }))
   if (sec.pageNumberStart != null && !keep.some((k) => k.includes('pgNumType'))) parts.push(el('w:pgNumType', { 'w:start': sec.pageNumberStart }))
   if (sec.titlePage) parts.push(el('w:titlePg'))
+  if (sec.columnsEdited) parts.push(el('w:cols', { 'w:num': (sec.columns ?? 1) > 1 ? sec.columns : undefined, 'w:space': 720 }))
   return `<w:sectPr>${orderChildren(parts, SECTPR_ORDER)}</w:sectPr>`
 }
 
@@ -1089,6 +1096,18 @@ export async function exportDocx(doc: ScribeDocument, original?: Uint8Array | nu
   const lastIdx = Math.max(0, meta.sections.length - 1)
   let body = await blocksXml(doc.content.content, ctx, { topLevel: true, sections: meta.sections })
   body += sectPrXml(ctx, lastIdx)
+
+  // ---- footnotes and endnotes
+  for (const kind of ['footnote', 'endnote'] as const) {
+    const relType = kind === 'footnote' ? REL.footnotes : REL.endnotes
+    const rel = rels.find(relType)
+    const refs = referencedNotes([doc.content, ...Object.values(meta.headerFooters)], kind)
+    const written = await writeNotes(zip, kind, (kind === 'footnote' ? meta.footnotes : meta.endnotes) ?? [], refs, rel ? resolvePath(dir, rel.target) : null, dir)
+    if (written?.created) {
+      rels.add(relType, written.path.slice(dir.length))
+      ct.override(written.path, kind === 'footnote' ? CT.footnotes : CT.endnotes)
+    }
+  }
 
   // ---- comments
   const commentsRel = rels.find(REL.comments)
