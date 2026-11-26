@@ -321,6 +321,25 @@ test('shapes, equations, citations, bibliography, proofing and mail merge work e
   await expect(page.locator('.sc-bibliography')).toContainText('Works Cited')
   await expect(body(page)).toContainText('(Smith)')
 
+  // footnote: typed in the notes panel, shown at the bottom of the page
+  await body(page).getByText('wrote this this sentence').click()
+  await page.keyboard.press('End')
+  await page.getByRole('tab', { name: 'References' }).click()
+  await page.getByRole('button', { name: 'Insert footnote' }).click()
+  await expect(page.getByLabel('Footnote 1 text')).toBeFocused()
+  await page.keyboard.type('A footnote typed in SCRIBE.')
+  await expect(page.locator('.sc-page .sc-page-notes')).toContainText('A footnote typed in SCRIBE.')
+
+  // a table taller than a page continues on the next page
+  await body(page).locator(':scope > p').last().click()
+  await page.getByRole('tab', { name: 'Insert' }).click()
+  await page.getByRole('button', { name: 'Table', exact: true }).click()
+  for (let i = 0; i < 150; i++) {
+    await page.keyboard.type(`c${i}`)
+    await page.keyboard.press('Tab')
+  }
+  await expect(page.locator('tr.sc-page-spacer-row').first()).toBeAttached()
+
   // proofing flags the repeated word and fixes it
   await page.getByRole('navigation').getByRole('button', { name: 'Proofing' }).click()
   await page.getByLabel('Check grammar and style').check()
@@ -345,6 +364,7 @@ test('shapes, equations, citations, bibliography, proofing and mail merge work e
   expect(json).toContain('"title":"Budget split"')
   expect(re.doc.meta.sources?.[0].title).toBe('Writing Well')
   expect(re.doc.meta.citationStyle).toBe('MLA')
+  expect(re.doc.meta.footnotes.map((n) => n.text)).toContain('A footnote typed in SCRIBE.')
 
   // merge to DOCX: one page per recipient
   await page.getByRole('navigation').getByRole('button', { name: 'Mail merge' }).click()
