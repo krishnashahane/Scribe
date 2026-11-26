@@ -2,7 +2,6 @@ import { generateJSON } from '@tiptap/core'
 import { api } from '../api'
 import { TEMPLATES } from '../model/templates'
 import { emptyMeta, type CompatibilityIssue, type DocMeta, type PMNode } from '../model/types'
-import { importDocx } from '../docx/import'
 import { sanitizeHtml, textToContent } from '../formats/formats'
 import { schemaExtensions } from '../model/extensions'
 import { initialYState } from '../collab/session'
@@ -60,6 +59,7 @@ export async function importFile(file: File): Promise<{ id: string; report: Comp
   const ext = file.name.split('.').pop()?.toLowerCase()
   if (ext === 'docx' || ext === 'docm' || ext === 'dotx') {
     const bytes = new Uint8Array(await file.arrayBuffer())
+    const { importDocx } = await import('../docx/import')
     const r = await importDocx(bytes)
     const cache = new Map<string, string>()
     await externalizeImages(r.doc.content, cache)
