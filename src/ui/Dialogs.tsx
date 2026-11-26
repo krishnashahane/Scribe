@@ -416,6 +416,8 @@ export const SHORTCUTS: [string, string][] = [
   [`${mod}F`, 'Find'],
   [`${mod}H`, 'Find and replace'],
   [`${mod}Alt+M`, 'Add comment'],
+  [`${mod}Alt+F / D`, 'Insert footnote / endnote'],
+  [`${mod}Shift+P`, 'Search all commands'],
   [`${mod}S`, 'Save a named version'],
   [`${mod}P`, 'Print / export PDF'],
   [`${mod}/`, 'This list'],
