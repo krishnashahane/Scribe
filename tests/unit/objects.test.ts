@@ -8,6 +8,7 @@ import { validatePackage } from '../../src/docx/validate'
 import { emptyDocument, type PMNode, type ScribeDocument } from '../../src/model/types'
 import { parseLinear, toLinear, ommlToTree, treeToOmml } from '../../src/objects/math'
 import { setTextBoxParagraphs } from '../../src/objects/textbox'
+import { newChart, type ChartKind } from '../../src/objects/chart'
 import { citationInstr, formatBibliography, formatCitation } from '../../src/features/citations'
 import { mergeDocument, parseCsv, recipientsFromCsv, mergeFieldInstr } from '../../src/features/merge'
 
@@ -202,5 +203,33 @@ describe('styles', () => {
     expect(h1.spacingBefore).toBe(360) // unmanaged properties of the original definition are kept
     expect(back.doc.meta.styles.find((s) => s.id === 'Callout')).toMatchObject({ name: 'Callout', italic: true, color: '#2f5496', spacingBefore: 120, spacingAfter: 240 })
     expect(find(back.doc.content, (n) => n.attrs?.styleId === 'Callout').length).toBe(1)
+  })
+})
+
+describe('new charts', () => {
+  it('creates real chart parts for every chart type and re-imports them as editable charts', async () => {
+    const kinds: ChartKind[] = ['column', 'bar', 'line', 'area', 'pie', 'doughnut']
+    const nodes = kinds.map((k) => {
+      const chart = { ...newChart(k), title: `${k} chart`, categories: ['A', 'B & C', 'D'], series: newChart(k).series.map((s) => ({ ...s, values: [1, null, 3] })) }
+      return { type: 'opaqueInline', attrs: { xml: '', label: 'Chart', preview: '', object: { kind: 'chart', chart, width: 400, height: 240 } } } as PMNode
+    })
+    const d = doc(nodes.map((n) => para(n)))
+    const { back, data } = await roundTrip(d, undefined, 'new-charts.docx')
+    const charts = find(back.doc.content, (n) => n.attrs?.object?.kind === 'chart').map((n) => n.attrs!.object)
+    expect(charts.map((c) => c.chart.kind)).toEqual(kinds)
+    for (const c of charts) {
+      expect(c.chart.editable).toBe(true)
+      expect(c.chart.categories).toEqual(['A', 'B & C', 'D'])
+      expect(c.chart.series[0].values).toEqual([1, null, 3])
+      expect(c.width).toBe(400)
+    }
+    expect(charts.map((c) => c.chart.title)).toEqual(kinds.map((k) => `${k} chart`))
+    const zip = await JSZip.loadAsync(data)
+    expect(Object.keys(zip.files).filter((f) => /^word\/charts\/chart\d+\.xml$/.test(f)).length).toBe(6)
+    // a second export of the re-imported file keeps the parts instead of creating more
+    // second rendering-check file with the remaining types first (LibreOffice previews show page one)
+    await roundTrip(doc([...nodes.slice(3), nodes[2]].map((n) => para(n))), undefined, 'new-charts-2.docx')
+    const again = await roundTrip(back.doc, data)
+    expect(Object.keys((await JSZip.loadAsync(again.data)).files).filter((f) => /^word\/charts\/chart\d+\.xml$/.test(f)).length).toBe(6)
   })
 })
