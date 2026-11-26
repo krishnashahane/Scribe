@@ -144,8 +144,8 @@ export async function importDocx(data: ArrayBuffer | Uint8Array): Promise<Import
       } else report.add('preserved', 'Custom XML parts', 'Large custom XML parts are kept unchanged but are too big to edit in SCRIBE.')
     }
   }
-  if (meta.footnotes.length) report.add('preserved', 'Footnotes', `${meta.footnotes.length} footnote(s) shown read-only; their text is preserved verbatim.`)
-  if (meta.endnotes.length) report.add('preserved', 'Endnotes', `${meta.endnotes.length} endnote(s) shown read-only; their text is preserved verbatim.`)
+  if (meta.footnotes.length) report.add('transformed', 'Footnotes', `${meta.footnotes.length} footnote(s) imported. Untouched notes are kept exactly; a note you edit keeps its paragraph and character formatting but rich formatting inside it is simplified.`, 'info')
+  if (meta.endnotes.length) report.add('transformed', 'Endnotes', `${meta.endnotes.length} endnote(s) imported. Untouched notes are kept exactly; a note you edit keeps its paragraph and character formatting but rich formatting inside it is simplified.`, 'info')
   if (meta.comments.length) report.add('transformed', 'Comments', 'Comments imported. Threaded replies and rich formatting inside comment text are flattened if you edit comments.')
 
   return {
@@ -955,7 +955,7 @@ async function parseSection(sectPr: Element | null, ctx: Ctx): Promise<SectionPr
   const cols = intAttr(wChild(sectPr, 'cols'), 'num')
   if (cols && cols > 1) {
     sec.columns = cols
-    ctx.report.add('transformed', 'Multi-column sections', 'Column settings are preserved on export; SCRIBE displays text in a single column.')
+    ctx.report.add('transformed', 'Multi-column sections', 'Column settings are kept and can be changed from Layout → Columns; SCRIBE shows the text in a single column while editing.')
   }
   const start = intAttr(wChild(sectPr, 'pgNumType'), 'start')
   if (start != null) sec.pageNumberStart = start
