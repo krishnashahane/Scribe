@@ -154,7 +154,7 @@ export function Ribbon(props: {
     <div className="sc-ribbon">
       <div className="sc-tabs" role="tablist" aria-label="Ribbon">
         {TABS.map((t, i) => (
-          <button key={t} ref={(el) => { tabRefs.current[i] = el }} role="tab" aria-selected={tab === t} tabIndex={tab === t ? 0 : -1} onKeyDown={(e) => onTabKey(e, i)} onClick={() => setTab(t)}>
+          <button key={t} ref={(el) => { tabRefs.current[i] = el }} role="tab" aria-selected={tab === t} tabIndex={tab === t ? 0 : -1} onKeyDown={(e) => onTabKey(e, i)} onMouseDown={(e) => e.preventDefault() /* keep the cursor in the document */} onClick={() => setTab(t)}>
             {t}
           </button>
         ))}
