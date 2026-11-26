@@ -4,8 +4,9 @@ import { generateHTML } from '@tiptap/core'
 import Collaboration from '@tiptap/extension-collaboration'
 import CollaborationCaret from '@tiptap/extension-collaboration-caret'
 import {
-  ArrowLeft, Cloud, CloudOff, FileDown, History, Loader2, MessageSquare, PanelLeft, PenLine, Share2, Sparkles, SpellCheck2, Users,
+  ArrowLeft, Cloud, CloudOff, FileDown, History, Loader2, MessageSquare, PanelLeft, PenLine, Share2, Sparkles, SpellCheck2, Users, Footprints,
 } from 'lucide-react'
+import { nextNoteId } from '../docx/notes'
 import { Proofing } from '../features/grammar'
 import { mergeDocument } from '../features/merge'
 import { BIBLIOGRAPHY_TITLES, citationInstr, formatBibliography, formatCitation } from '../features/citations'
@@ -17,7 +18,7 @@ import { newChart } from '../objects/chart'
 import type { ObjectInfo } from '../model/extensions'
 import type { StyleDef } from '../model/types'
 import { ChartDialog, CustomXmlDialog, DrawDialog, EquationDialog, ShapeDialog, SmartArtDialog, TextBoxDialog } from './ObjectDialogs'
-import { CitationDialog, MailMergePanel, ModifyStyleDialog, ProofingPanel, SourcesDialog } from './FeatureUI'
+import { CitationDialog, MailMergePanel, ModifyStyleDialog, NotesPanel, ProofingPanel, SourcesDialog } from './FeatureUI'
 import { createDocument } from './docActions'
 import { api, type User } from '../api'
 import { openSession, userColor, type CollabSession, type SyncStatus } from '../collab/session'
@@ -39,7 +40,7 @@ import {
 import { Menu, mod, useToast } from './kit'
 import type { CompatibilityIssue } from '../model/types'
 
-type Panel = 'pages' | 'comments' | 'changes' | 'versions' | 'ai' | 'proofing' | 'merge'
+type Panel = 'pages' | 'comments' | 'changes' | 'versions' | 'ai' | 'proofing' | 'merge' | 'notes'
 type DialogState =
   | { kind: 'pageSetup'; section: number }
   | { kind: 'hf'; which: 'header' | 'footer'; section: number; first: boolean }
@@ -200,7 +201,17 @@ function DocEditor({ docId, info, session, status, user, onUser, theme, onToggle
         ...schemaExtensions({ collaborative: true }),
         Collaboration.configure({ document: session.ydoc, field: 'default' }),
         CollaborationCaret.configure({ provider: session.provider, user: { name: user.name, color: userColor(user.id) } }),
-        Pagination.configure({ getSections: () => live.meta.sections, getGap: () => live.gap, getScale: () => live.zoom, onLayout: setPages }),
+        Pagination.configure({
+          getSections: () => live.meta.sections,
+          getGap: () => live.gap,
+          getScale: () => live.zoom,
+          onLayout: setPages,
+          getNoteHeight: (id) => {
+            const n = live.meta.footnotes.find((f) => f.id === id)
+            return n ? measureNotes([{ label: '00', text: n.text }], contentWidth(live.meta)) : 0
+          },
+          getEndnotesHeight: () => (live.meta.endnotes.length ? measureNotes(live.meta.endnotes.map((n) => ({ label: '00', text: n.text })), contentWidth(live.meta), true) : 0),
+        }),
         FindReplace,
         Proofing,
         Suggesting.configure({ author: () => user.name }),
@@ -250,6 +261,9 @@ function DocEditor({ docId, info, session, status, user, onUser, theme, onToggle
     [session],
   )
 
+  const noteLabels = useNoteLabels(editor)
+  const [focusNote, setFocusNote] = useState<string | null>(null)
+
   // ---- autosave snapshot (content lives in Yjs; this snapshot feeds listings, exports on other devices and versions)
   const snapshot = useCallback((): ScribeDocument => ({ version: 1, content: editor!.getJSON() as PMNode, meta: live.meta }), [editor, live])
   const saveSnapshot = useCallback(
@@ -293,7 +307,7 @@ function DocEditor({ docId, info, session, status, user, onUser, theme, onToggle
   }, [title])
   useEffect(() => {
     repaginate(editor?.view)
-  }, [meta.sections, editor])
+  }, [meta.sections, meta.footnotes, meta.endnotes, editor])
   useEffect(() => {
     localStorage.setItem('scribe-zoom', String(zoom))
     repaginate(editor?.view)
@@ -536,8 +550,30 @@ function DocEditor({ docId, info, session, status, user, onUser, theme, onToggle
         return setShowMarks((v) => !v)
       case 'equation':
         return setDialog({ kind: 'equation' })
+      case 'columns-1':
+      case 'columns-2':
+      case 'columns-3': {
+        const n = Number(a.slice(-1))
+        updateSections(sec, (x) => ({ ...x, columns: n, columnsEdited: true }))
+        return toast(n === 1 ? 'This section is set to one column.' : `This section is set to ${n} columns. Exported and printed files show the columns; SCRIBE shows the text in one column while you edit.`, 'info')
+      }
       case 'chart':
         return setDialog({ kind: 'newChart' })
+      case 'footnote':
+      case 'endnote': {
+        const kind = a
+        const list = kind === 'footnote' ? live.meta.footnotes : live.meta.endnotes
+        const id = nextNoteId(list)
+        setMeta((m) => (kind === 'footnote' ? { ...m, footnotes: [...m.footnotes, { id, text: '', edited: true }] } : { ...m, endnotes: [...m.endnotes, { id, text: '', edited: true }] }))
+        // a selected object (picture, chart, shape) is never replaced: the reference goes right after it.
+        // No editor focus here: the note's text box in the panel takes the cursor.
+        const sel = editor.state.selection
+        const at = (sel as any).node ? sel.to : sel.from
+        editor.commands.insertContentAt(sel.empty || (sel as any).node ? at : { from: sel.from, to: sel.to }, { type: 'noteRef', attrs: { noteId: id, kind, label: '' } })
+        setPanel('notes')
+        setFocusNote(`${kind}:${id}`)
+        return
+      }
       case 'textbox':
         return setDialog({ kind: 'newShape', shape: { ...DEFAULT_SHAPE, kind: 'rect', fill: '#ffffff', stroke: '#1f2937', strokeWidth: 1, width: 220, height: 90, text: 'Text box' } })
       case 'draw':
@@ -741,6 +777,9 @@ function DocEditor({ docId, info, session, status, user, onUser, theme, onToggle
       } else if (k === '/') {
         e.preventDefault()
         setDialog({ kind: 'shortcuts' })
+      } else if (e.altKey && !readOnly && (e.code === 'KeyF' || e.code === 'KeyD')) {
+        e.preventDefault()
+        onAction(e.code === 'KeyF' ? 'footnote' : 'endnote')
       } else if (e.altKey && (k === 'm' || e.code === 'KeyM')) {
         e.preventDefault()
         onAction('comment')
@@ -845,6 +884,7 @@ function DocEditor({ docId, info, session, status, user, onUser, theme, onToggle
               ['comments', <MessageSquare size={18} key="i" />, 'Comments'],
               ['changes', <PenLine size={18} key="i" />, 'Tracked changes'],
               ['versions', <History size={18} key="i" />, 'Version history'],
+              ['notes', <Footprints size={18} key="i" />, 'Footnotes and endnotes'],
               ['proofing', <SpellCheck2 size={18} key="i" />, 'Proofing'],
               ['merge', <Users size={18} key="i" />, 'Mail merge'],
               ['ai', <Sparkles size={18} key="i" />, 'AI assistant'],
@@ -871,6 +911,7 @@ function DocEditor({ docId, info, session, status, user, onUser, theme, onToggle
             {panel === 'changes' && <ChangesPanel editor={editor} readOnly={readOnly} />}
             {panel === 'versions' && <VersionsPanel docId={docId} readOnly={readOnly} onSaveVersion={() => saveVersion()} onRestore={restore} />}
             {panel === 'ai' && <AiPanel editor={editor} readOnly={readOnly} />}
+            {panel === 'notes' && <NotesPanel editor={editor} meta={meta} setMeta={setMeta} labels={noteLabels} readOnly={readOnly} focus={focusNote} onFocused={() => setFocusNote(null)} />}
             {panel === 'proofing' && <ProofingPanel editor={editor} readOnly={readOnly} />}
             {panel === 'merge' && <MailMergePanel editor={editor} meta={meta} setMeta={setMeta} readOnly={readOnly} onMergeToDoc={mergeToNewDocument} onMergeToDocx={mergeToDocx} />}
           </aside>
@@ -878,7 +919,7 @@ function DocEditor({ docId, info, session, status, user, onUser, theme, onToggle
         <main className="sc-canvas" aria-label="Document">
           <div className="sc-zoom" style={{ zoom } as any}>
             <div className="sc-pages-wrap" style={{ width: maxWidth, minHeight: totalHeight }} onDoubleClick={onCanvasDoubleClick}>
-              <PageFrames pages={pages} meta={meta} offsetTop={twipToPx(p0.marginTop)} />
+              <PageFrames pages={pages} meta={meta} offsetTop={twipToPx(p0.marginTop)} labels={noteLabels} />
               <div
                 className="sc-editor-host"
                 style={{ width: twipToPx(p0.width), paddingTop: twipToPx(p0.marginTop), paddingLeft: twipToPx(p0.marginLeft), paddingRight: twipToPx(p0.marginRight), minHeight: totalHeight }}
@@ -902,6 +943,11 @@ function DocEditor({ docId, info, session, status, user, onUser, theme, onToggle
         <WordCountLive editor={editor} />
         <span className="sc-spacer" />
         <span>{Object.keys(meta.headerFooters).length ? 'Headers/footers on' : ''}</span>
+        {(meta.sections[currentSection()]?.columns ?? 1) > 1 && (
+          <span className="sc-chip-ui" title="Columns appear in exported and printed files; editing shows a single column">
+            {meta.sections[currentSection()]!.columns} columns in the file
+          </span>
+        )}
         <label className="sc-zoom-slider">
           <span className="sc-visually-hidden">Zoom</span>
           <button className="sc-zoom-step" onClick={() => setZoom((z) => Math.max(0.3, Math.round((z - 0.1) * 10) / 10))} aria-label="Zoom out">−</button>
@@ -1144,7 +1190,81 @@ function WordCountLive({ editor }: { editor: Editor }) {
 }
 
 /** Page backgrounds with headers and footers rendered per page (fields substituted). */
-function PageFrames({ pages, meta, offsetTop }: { pages: PageInfo[]; meta: DocMeta; offsetTop: number }) {
+/** Footnote/endnote display order labels, from the references in the document. */
+function useNoteLabels(editor: Editor | null) {
+  const [labels, setLabels] = useState<Record<string, string>>({})
+  useEffect(() => {
+    if (!editor) return
+    const read = () => {
+      const out: Record<string, string> = {}
+      editor.state.doc.descendants((n) => {
+        if (n.type.name === 'noteRef') out[`${n.attrs.kind === 'endnote' ? 'endnote' : 'footnote'}:${n.attrs.noteId}`] = String(n.attrs.label || '')
+      })
+      setLabels((cur) => (JSON.stringify(cur) === JSON.stringify(out) ? cur : out))
+    }
+    read()
+    editor.on('update', read)
+    return () => {
+      editor.off('update', read)
+    }
+  }, [editor])
+  return labels
+}
+
+/** Position of a note in reading order (labels are assigned in document order). */
+const noteOrder = (labels: Record<string, string>, kind: string, id: string) => {
+  const keys = Object.keys(labels).filter((k) => k.startsWith(kind + ':'))
+  const i = keys.indexOf(`${kind}:${id}`)
+  return i === -1 ? 1e9 : i
+}
+
+const contentWidth = (m: DocMeta) => {
+  const p = m.sections[0].page
+  return twipToPx(p.width - p.marginLeft - p.marginRight)
+}
+
+let measurer: HTMLDivElement | null = null
+/** Rendered height of note text in the page-notes style (same CSS as the page frames). */
+function measureNotes(notes: { label: string; text: string }[], width: number, endnotes = false): number {
+  if (typeof document === 'undefined') return 0
+  if (!measurer) {
+    measurer = document.createElement('div')
+    measurer.setAttribute('aria-hidden', 'true')
+    measurer.style.cssText = 'position:absolute;left:-10000px;top:0;visibility:hidden;pointer-events:none'
+    document.body.appendChild(measurer)
+  }
+  measurer.className = `sc-page-notes sc-doc${endnotes ? ' is-endnotes' : ''}`
+  measurer.style.width = `${width}px`
+  measurer.replaceChildren()
+  if (endnotes) {
+    const h = document.createElement('div')
+    h.className = 'sc-notes-title'
+    h.textContent = 'Endnotes'
+    measurer.appendChild(h)
+  }
+  for (const n of notes) {
+    const p = document.createElement('p')
+    const sup = document.createElement('sup')
+    sup.textContent = n.label
+    p.append(sup, ' ', n.text || ' ')
+    measurer.appendChild(p)
+  }
+  return Math.ceil(measurer.getBoundingClientRect().height)
+}
+
+function NoteList({ notes, kind, labels }: { notes: { id: string; text: string }[]; kind: 'footnote' | 'endnote'; labels: Record<string, string> }) {
+  return (
+    <>
+      {notes.map((n) => (
+        <p key={n.id} data-note={n.id}>
+          <sup>{labels[`${kind}:${n.id}`] || '*'}</sup> {n.text}
+        </p>
+      ))}
+    </>
+  )
+}
+
+function PageFrames({ pages, meta, offsetTop, labels }: { pages: PageInfo[]; meta: DocMeta; offsetTop: number; labels: Record<string, string> }) {
   const total = pages.length
   const extensions = useMemo(() => schemaExtensions(), [])
   const htmlCache = useMemo(() => {
@@ -1175,6 +1295,17 @@ function PageFrames({ pages, meta, offsetTop }: { pages: PageInfo[]; meta: DocMe
             {fk && htmlCache[fk] && (
               <div className="sc-page-footer sc-doc" style={{ bottom: p.footerOffset, left: p.marginLeft, right: p.marginRight }} dangerouslySetInnerHTML={{ __html: withFields(htmlCache[fk], p) }} />
             )}
+            {p.notes.length > 0 && (
+              <div className="sc-page-notes sc-doc" style={{ bottom: p.marginBottom, left: p.marginLeft, right: p.marginRight, height: p.noteSpace }}>
+                <NoteList notes={p.notes.map((id) => meta.footnotes.find((f) => f.id === id)).filter((f): f is NonNullable<typeof f> => !!f)} kind="footnote" labels={labels} />
+              </div>
+            )}
+            {p.endnotesTop !== undefined && (
+              <div className="sc-page-notes sc-doc is-endnotes" style={{ top: p.endnotesTop, left: p.marginLeft, right: p.marginRight }}>
+                <div className="sc-notes-title">Endnotes</div>
+                <NoteList notes={meta.endnotes.filter((n) => labels[`endnote:${n.id}`]).sort((a, b) => noteOrder(labels, 'endnote', a.id) - noteOrder(labels, 'endnote', b.id))} kind="endnote" labels={labels} />
+              </div>
+            )}
             <span className="sc-page-number-hint">{p.index + 1}</span>
           </div>
         )
@@ -1187,7 +1318,10 @@ function PageFrames({ pages, meta, offsetTop }: { pages: PageInfo[]; meta: DocMe
 function buildStyleCss(meta: DocMeta) {
   const d = meta.defaults
   const esc = (s: string) => s.replace(/["\\]/g, '')
-  let css = `.sc-doc{font-family:"${esc(d.fontFamily)}",Calibri,Carlito,"Segoe UI",Arial,sans-serif;font-size:${d.fontSizePt}pt;line-height:${d.lineHeight}}`
+  const pg = meta.sections[0].page
+  // a picture never grows past the text area of a page (the file keeps its real size)
+  let css = `.sc-doc img{max-height:${Math.floor(twipToPx(pg.height - pg.marginTop - pg.marginBottom))}px;object-fit:contain}`
+  css += `.sc-doc{font-family:"${esc(d.fontFamily)}",Calibri,Carlito,"Segoe UI",Arial,sans-serif;font-size:${d.fontSizePt}pt;line-height:${d.lineHeight}}`
   for (const s of meta.styles) {
     if (s.type !== 'paragraph') continue
     const r: string[] = []
