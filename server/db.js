@@ -194,6 +194,16 @@ export async function rateLimit(db, key, limit, windowMs) {
      RETURNING count`,
     [key, start],
   )
-  if (Math.random() < 0.01) await db.query('DELETE FROM rate_limits WHERE window_start < $1', [now - 24 * 3600_000])
+  if (Math.random() < 0.01) await housekeep(db, now)
   return rows[0].count <= limit
+}
+
+/** Remove rows nobody can use any more: old rate-limit windows, expired sessions, stale presence, abandoned uploads. */
+export async function housekeep(db, now = Date.now()) {
+  const day = 24 * 3600_000
+  await db.query('DELETE FROM rate_limits WHERE window_start < $1', [now - day])
+  await db.query('DELETE FROM sessions WHERE expires < $1', [now])
+  await db.query('DELETE FROM presence WHERE updated < $1', [now - day])
+  // an upload never completed within a day; a completed blob is never touched
+  await db.query('DELETE FROM blobs WHERE complete = FALSE AND created < $1', [now - day])
 }

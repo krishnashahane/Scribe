@@ -126,6 +126,46 @@ describe('no-login guest sessions', () => {
   })
 })
 
+describe('session lifecycle', () => {
+  it('ends the previous session when signing in, so an old token stops working', async () => {
+    await user('rotate@example.com')
+    const guest = (await api('/api/auth/guest', { method: 'POST' })).cookie!
+    const login = await api('/api/auth/login', { method: 'POST', cookie: guest, body: { email: 'rotate@example.com', password: 'correct horse battery' } })
+    expect(login.status).toBe(200)
+    expect(login.cookie).not.toBe(guest)
+    expect((await api('/api/auth/me', { cookie: guest })).json.user).toBeNull()
+    expect((await api('/api/auth/me', { cookie: login.cookie })).json.user.email).toBe('rotate@example.com')
+  })
+  it('replaces the year-long guest session with a normal one when upgrading', async () => {
+    const guest = (await api('/api/auth/guest', { method: 'POST' })).cookie!
+    const up = await api('/api/auth/upgrade', { method: 'POST', cookie: guest, body: { email: 'rotated-up@example.com', password: 'correct horse battery' } })
+    expect(up.status).toBe(200)
+    expect(up.headers.get('set-cookie')).toMatch(/Max-Age=1209600/)
+    expect((await api('/api/auth/me', { cookie: guest })).json.user).toBeNull()
+    expect((await api('/api/auth/me', { cookie: up.cookie })).json.user.email).toBe('rotated-up@example.com')
+  })
+  it('limits share invitations, which reveal whether an email has an account', async () => {
+    const owner = await user('sharelimit@example.com')
+    const d = await api('/api/docs', { method: 'POST', cookie: owner, body: { title: 'S', content: doc } })
+    const codes: number[] = []
+    for (let i = 0; i < 32; i++) codes.push((await api(`/api/docs/${d.json.id}/shares`, { method: 'POST', cookie: owner, body: { email: `nobody${i}@example.com`, role: 'viewer' } })).status)
+    expect(codes.slice(0, 30).every((c) => c === 404)).toBe(true)
+    expect(codes.slice(30)).toEqual([429, 429])
+  })
+  it('housekeeping removes expired sessions and abandoned uploads but keeps live data', async () => {
+    const { housekeep } = await import('../../server/db.js')
+    const c = await user('housekeep@example.com')
+    const uid = (await api('/api/auth/me', { cookie: c })).json.user.id
+    const old = Date.now() - 3 * 24 * 3600_000
+    await db.query('INSERT INTO sessions (token_hash, user_id, expires) VALUES ($1, $2, $3)', ['expired-token-hash', uid, old])
+    await db.query("INSERT INTO blobs (id, owner_id, kind, mime, size, chunks, complete, created) VALUES ('abandoned01', $1, 'media', 'image/png', 4, 1, FALSE, $2), ('finished001', $1, 'media', 'image/png', 4, 1, TRUE, $2)", [uid, old])
+    await housekeep(db)
+    expect((await db.query("SELECT 1 FROM sessions WHERE token_hash = 'expired-token-hash'")).rows).toHaveLength(0)
+    expect((await db.query("SELECT id FROM blobs WHERE id IN ('abandoned01', 'finished001')")).rows.map((r: any) => r.id)).toEqual(['finished001'])
+    expect((await api('/api/auth/me', { cookie: c })).json.user.email).toBe('housekeep@example.com')
+  })
+})
+
 describe('documents and authorization', () => {
   it('enforces owner / editor / viewer / stranger permissions server-side', async () => {
     const owner = await user('owner@example.com')

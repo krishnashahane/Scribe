@@ -97,8 +97,15 @@ export async function createApp(opts = {}) {
   const apiLimit = limited('api', 1200, 60_000, byUser)
   const blobLimit = limited('blob', 300, 60_000, byUser)
   const aiLimit = limited('ai', 30, 60_000, byUser)
+  // sharing reveals whether an email has an account, so it gets its own tighter limit
+  const shareLimit = limited('share', 30, 60_000, byUser)
   app.use('/api', (req, res, next) => (req.path.startsWith('/auth/') || req.path === '/health' ? next() : apiLimit(req, res, next)))
 
+  /** Start a fresh session, ending the one this browser had before (no session fixation, no orphaned tokens). */
+  const startSession = async (req, res, userId) => {
+    await destroySession(db, parseCookies(req.headers.cookie)[SESSION_COOKIE])
+    res.setHeader('Set-Cookie', sessionCookie(await createSession(db, userId), secureCookies))
+  }
   const publicUser = (u) => (u ? { id: u.id, email: isGuestEmail(u.email) ? '' : u.email, name: u.name, guest: isGuestEmail(u.email) } : null)
 
   // ---------------------------------------------------------------- auth
@@ -116,7 +123,7 @@ export async function createApp(opts = {}) {
         [id, b.email, name, await hashPassword(b.password), Date.now()],
       )
       if (!rows.length) return res.status(409).json({ error: 'An account with this email already exists.' })
-      res.setHeader('Set-Cookie', sessionCookie(await createSession(db, id), secureCookies))
+      await startSession(req, res, id)
       res.status(201).json({ user: publicUser({ id, email: b.email, name }) })
     }),
   )
@@ -132,7 +139,7 @@ export async function createApp(opts = {}) {
       const usable = u && !isGuestEmail(u.email)
       const ok = await verifyPassword(b.password, usable ? u.pass_hash : DUMMY_HASH)
       if (!usable || !ok) return res.status(401).json({ error: 'Email or password is incorrect.' })
-      res.setHeader('Set-Cookie', sessionCookie(await createSession(db, u.id), secureCookies))
+      await startSession(req, res, u.id)
       res.json({ user: publicUser(u) })
     }),
   )
@@ -174,7 +181,16 @@ export async function createApp(opts = {}) {
       const exists = await db.query('SELECT 1 FROM users WHERE email = $1', [b.email])
       if (exists.rows.length) return res.status(409).json({ error: 'An account with this email already exists. Sign in instead.' })
       const name = b.name || b.email.split('@')[0]
-      await db.query('UPDATE users SET email = $1, name = $2, pass_hash = $3 WHERE id = $4', [b.email, name, await hashPassword(b.password), req.user.id])
+      try {
+        await db.query('UPDATE users SET email = $1, name = $2, pass_hash = $3 WHERE id = $4', [b.email, name, await hashPassword(b.password), req.user.id])
+      } catch (e) {
+        // another request took the email between the check and the update
+        if (e?.code === '23505') return res.status(409).json({ error: 'An account with this email already exists. Sign in instead.' })
+        throw e
+      }
+      // the year-long guest session becomes an ordinary account session
+      await db.query('DELETE FROM sessions WHERE user_id = $1', [req.user.id])
+      res.setHeader('Set-Cookie', sessionCookie(await createSession(db, req.user.id), secureCookies))
       res.json({ user: publicUser({ id: req.user.id, email: b.email, name }) })
     }),
   )
@@ -482,6 +498,7 @@ export async function createApp(opts = {}) {
   app.post(
     '/api/docs/:id/shares',
     requireUser,
+    shareLimit,
     docAccess('owner'),
     ah(async (req, res) => {
       const b = check(schemas.share, req.body, res)
@@ -588,6 +605,8 @@ export async function createApp(opts = {}) {
   const dist = path.join(here, '..', 'dist')
   if (opts.serveStatic && fs.existsSync(dist)) {
     app.use(express.static(dist, { index: false, maxAge: '1h' }))
+    // a missing hashed asset is a real 404, not the app page (matches vercel.json)
+    app.get(/^\/assets\//, (req, res) => res.status(404).type('text/plain').send('Not found'))
     app.get(/^(?!\/api).*/, (req, res) => res.sendFile(path.join(dist, 'index.html')))
   }
 
