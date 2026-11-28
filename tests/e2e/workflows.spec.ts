@@ -472,3 +472,16 @@ test('command search finds and runs actions', async ({ page }) => {
   await page.keyboard.press('Escape')
   await expect(input).toHaveCount(0)
 })
+
+test('links written as paths open the right screen, and missing files are real 404s', async ({ page, request }) => {
+  await page.goto('/documents')
+  await expect(page.getByRole('heading', { name: 'Start a document' })).toBeVisible({ timeout: 20000 })
+  expect(new URL(page.url()).pathname).toBe('/')
+  expect(new URL(page.url()).hash).toBe('#/documents')
+  await page.goto('/some/old/link')
+  await expect(body(page)).toBeVisible({ timeout: 20000 })
+  expect(new URL(page.url()).pathname).toBe('/')
+  expect((await request.get('/assets/missing-file.js')).status()).toBe(404)
+  expect((await request.get('/api/missing')).status()).toBe(404)
+  expect((await request.get('/favicon.svg')).status()).toBe(200)
+})

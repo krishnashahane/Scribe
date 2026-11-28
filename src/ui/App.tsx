@@ -19,6 +19,22 @@ function parse(hash: string): Route {
   return { name: 'start' }
 }
 
+/**
+ * Routes live in the hash (#/doc/…). A link written as a path (/doc/…, /documents, /signin) or any other
+ * path the server answered with the app is turned into the matching hash route, so no link lands nowhere.
+ */
+export function normalizeLocation(loc: { pathname: string; hash: string; search: string }): string | null {
+  if (loc.pathname === '/' || loc.pathname === '/index.html') return loc.pathname === '/' ? null : '/' + loc.search + loc.hash
+  if (loc.hash) return '/' + loc.search + loc.hash
+  const asHash = '#' + loc.pathname.replace(/\/+$/, '')
+  return '/' + loc.search + (parse(asHash).name === 'start' ? '' : asHash)
+}
+
+{
+  const to = normalizeLocation(location)
+  if (to !== null) history.replaceState(null, '', to)
+}
+
 function useRoute() {
   const [route, setRoute] = useState(() => parse(location.hash))
   useEffect(() => {
