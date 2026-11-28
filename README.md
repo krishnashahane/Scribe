@@ -50,7 +50,8 @@ Vercel they're set in the project settings, never in code.
 ### Deploying to Vercel
 
 The client is a static Vite build; the API is one Vercel Function (`api/index.js`, Express) backed by Postgres.
-`vercel.json` sets the build, the `/api/*` rewrite, and security headers for every response.
+`vercel.json` sets the build, the `/api/*` rewrite, an app fallback so links written as paths (`/documents`,
+`/doc/<id>`) open the right screen, and security headers for every response.
 
 ```bash
 vercel link --project scribe
@@ -66,8 +67,8 @@ The database schema is created and migrated automatically on first request.
 ```bash
 npm run lint              # ESLint (typescript-eslint, react-hooks, no-console)
 npm run typecheck         # TypeScript
-npm test                  # 35 unit/integration tests: DOCX import/export, security, server, collaboration
-npm run test:e2e          # 6 browser tests (Playwright + Chromium) against the production build
+npm test                  # 66 unit/integration tests: DOCX import/export, security, server, collaboration
+npm run test:e2e          # 11 browser tests (Playwright + Chromium) against the production build
 LIVE_URL=https://… npx playwright test -c playwright.live.config.ts   # same suite against a deployment
 npm run fixtures          # regenerate the DOCX corpus in tests/fixtures
 npm run verify:python-docx  # open every exported file with python-docx (pip install python-docx)
@@ -115,7 +116,8 @@ content (unsafe link/image URLs and unknown node types removed); authorization o
 viewer; viewers' sync writes are refused); rate limits stored in the database (auth, guest creation, uploads, AI,
 general API) so they hold across serverless instances; parameterised SQL only; strict same-origin CORS; CSRF header
 check; CSP, HSTS, X-Frame-Options, X-Content-Type-Options, Referrer-Policy, COOP, Permissions-Policy; HttpOnly
-SameSite=Strict Secure session cookies; scrypt password hashes with constant-time comparison; no-login guest
+SameSite=Strict Secure session cookies, replaced on every sign-in and when a guest upgrades to an account; expired
+sessions, stale presence and abandoned uploads cleaned up automatically; share invitations rate-limited; scrypt password hashes with constant-time comparison; no-login guest
 identities can't be signed into with a password; uploads verified by magic bytes; generic error messages with no
 stack traces; no source maps in production; XML entity and zip-bomb defences in the DOCX reader.
 
